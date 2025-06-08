@@ -7,10 +7,12 @@ use bevy_egui::EguiPlugin;
 mod game_state;
 mod ui;
 mod targets;
+mod enemies;
 
 use game_state::*;
 use ui::*;
 use targets::*;
+use enemies::*;
 
 fn main() {
     App::new()
@@ -28,6 +30,7 @@ fn main() {
         .init_resource::<ChallengeTimer>()
         .init_resource::<UpgradeData>()
         .add_event::<TargetHitEvent>()
+        .add_event::<EnemyDestroyedEvent>()
         .add_systems(Startup, setup_menu_camera)
         .add_systems(OnEnter(GameState::Playing), (setup_game, capture_mouse))
         .add_systems(OnExit(GameState::Playing), release_mouse)
@@ -56,6 +59,19 @@ fn main() {
                 check_game_over,
                 game_hud,
                 handle_escape_key,
+            ).run_if(in_state(GameState::Playing)),
+        )
+        .add_systems(
+            Update,
+            (
+                spawn_enemies_system,
+                enemy_ai_system,
+                enemy_shooting_system,
+                player_shooting_system,
+                update_bullets_system,
+                bullet_collision_system,
+                player_damage_system,
+                spawn_explosion_particles,
             ).run_if(in_state(GameState::Playing)),
         )
         .add_systems(OnEnter(GameState::Paused), release_mouse)
@@ -156,6 +172,10 @@ fn setup_game(
             current_roll: 0.0,
             target_roll: 0.0,
             boost_timer: 0.0,
+        },
+        Health {
+            current: 100.0,
+            max: 100.0,
         },
         GameEntity,
     )).id();

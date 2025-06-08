@@ -175,7 +175,7 @@ pub fn spawn_targets_system(
 
 pub fn collision_detection_system(
     mut commands: Commands,
-    aircraft_query: Query<&Transform, With<Aircraft>>,
+    mut aircraft_query: Query<(&Transform, &mut crate::enemies::Health), With<Aircraft>>,
     targets_query: Query<(Entity, &Transform, &Target, &Children), With<Collectible>>,
     mut game_stats: ResMut<GameStats>,
     mut challenge_timer: ResMut<ChallengeTimer>,
@@ -183,7 +183,7 @@ pub fn collision_detection_system(
     upgrades: Res<UpgradeData>,
     mut hit_events: EventWriter<TargetHitEvent>,
 ) {
-    if let Ok(aircraft_transform) = aircraft_query.single() {
+    if let Ok((aircraft_transform, mut aircraft_health)) = aircraft_query.single_mut() {
         let magnet_range = get_magnet_range(upgrades.magnet_level);
         let collection_range = 5.0 + magnet_range;
         
@@ -220,6 +220,15 @@ pub fn collision_detection_system(
                     }
                     _ => {}
                 }
+                
+                // Heal player when collecting balloons
+                let heal_amount = match target.target_type {
+                    TargetType::Golden => 20.0,  // Golden balloons heal more
+                    TargetType::Time => 15.0,    // Time balloons heal moderately
+                    _ => 10.0,                   // Normal balloons heal less
+                };
+                
+                aircraft_health.current = (aircraft_health.current + heal_amount).min(aircraft_health.max);
                 
                 // Send hit event
                 hit_events.write(TargetHitEvent {
@@ -289,7 +298,7 @@ pub fn spawn_hit_particles(
 ) {
     for event in hit_events.read() {
         // Spawn multiple particles
-        for _ in 0..10 {
+        for i in 0..15 {
             let velocity = Vec3::new(
                 (fastrand::f32() - 0.5) * 20.0,
                 fastrand::f32() * 15.0 + 5.0,
@@ -317,6 +326,29 @@ pub fn spawn_hit_particles(
                     velocity,
                 },
             ));
+            
+            // Add green healing particles
+            if i < 5 {
+                let heal_velocity = Vec3::new(
+                    (fastrand::f32() - 0.5) * 10.0,
+                    fastrand::f32() * 5.0 + 10.0,
+                    (fastrand::f32() - 0.5) * 10.0,
+                );
+                
+                commands.spawn((
+                    Mesh3d(meshes.add(Sphere::new(0.2))),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        base_color: Color::srgb(0.2, 1.0, 0.2),
+                        emissive: Color::srgb(0.2, 1.0, 0.2).into(),
+                        ..default()
+                    })),
+                    Transform::from_translation(event.position),
+                    ParticleEffect {
+                        lifetime: 1.5,
+                        velocity: heal_velocity,
+                    },
+                ));
+            }
         }
     }
 }

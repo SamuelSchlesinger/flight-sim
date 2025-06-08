@@ -89,6 +89,13 @@ pub fn main_menu_ui(
                     ui.add_space(40.0);
                     ui.label(egui::RichText::new(format!("💰 Coins: {}", game_stats.coins)).size(16.0));
                 });
+                
+                ui.add_space(40.0);
+                
+                // Quit button
+                if ui.add_sized([200.0, 40.0], egui::Button::new(egui::RichText::new("🚪 Quit Game").size(18.0))).clicked() {
+                    std::process::exit(0);
+                }
             });
         });
 }
@@ -99,6 +106,7 @@ pub fn game_hud(
     challenge_timer: Res<ChallengeTimer>,
     game_mode: Res<CurrentGameMode>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
+    player_query: Query<&crate::enemies::Health, With<crate::Aircraft>>,
 ) {
     let ctx = contexts.ctx_mut();
     
@@ -178,6 +186,32 @@ pub fn game_hud(
             ui.label(egui::RichText::new(format!("Speed: {}", speed_text)).size(18.0).color(speed_color));
         });
     
+    // Health bar
+    if let Ok(health) = player_query.single() {
+        egui::Area::new(egui::Id::new("health_bar"))
+            .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -40.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("HEALTH").size(16.0).color(egui::Color32::WHITE));
+                    ui.add_space(10.0);
+                    
+                    let health_percentage = health.current / health.max;
+                    let health_color = if health_percentage > 0.6 {
+                        egui::Color32::GREEN
+                    } else if health_percentage > 0.3 {
+                        egui::Color32::YELLOW
+                    } else {
+                        egui::Color32::RED
+                    };
+                    
+                    ui.add(egui::ProgressBar::new(health_percentage)
+                        .desired_width(200.0)
+                        .fill(health_color)
+                        .text(format!("{:.0}/{:.0}", health.current, health.max)));
+                });
+            });
+    }
+    
     // Controls hint
     egui::Area::new(egui::Id::new("controls_hint"))
         .anchor(egui::Align2::LEFT_BOTTOM, [10.0, -10.0])
@@ -188,6 +222,7 @@ pub fn game_hud(
                 ui.label(egui::RichText::new("A/D - Roll").size(14.0).color(egui::Color32::GRAY));
                 ui.label(egui::RichText::new("W/S - Speed Up/Down").size(14.0).color(egui::Color32::GRAY));
                 ui.label(egui::RichText::new("Space - Boost").size(14.0).color(egui::Color32::GRAY));
+                ui.label(egui::RichText::new("Left Click/F - Shoot").size(14.0).color(egui::Color32::GRAY));
                 ui.label(egui::RichText::new("ESC - Pause").size(14.0).color(egui::Color32::GRAY));
             });
         });
