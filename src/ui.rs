@@ -152,11 +152,45 @@ pub fn game_hud(
         _ => {}
     }
     
+    // Speed indicator
+    egui::Area::new(egui::Id::new("speed_indicator"))
+        .anchor(egui::Align2::LEFT_TOP, [10.0, 50.0])
+        .show(ctx, |ui| {
+            let speed_text = if keyboard_input.pressed(KeyCode::Space) {
+                "BOOST!"
+            } else if keyboard_input.pressed(KeyCode::KeyW) {
+                "Fast"
+            } else if keyboard_input.pressed(KeyCode::KeyS) {
+                "Slow"
+            } else {
+                "Normal"
+            };
+            
+            let speed_color = if keyboard_input.pressed(KeyCode::Space) {
+                egui::Color32::from_rgb(255, 150, 0)
+            } else if keyboard_input.pressed(KeyCode::KeyW) {
+                egui::Color32::from_rgb(0, 255, 0)
+            } else if keyboard_input.pressed(KeyCode::KeyS) {
+                egui::Color32::from_rgb(255, 255, 0)
+            } else {
+                egui::Color32::WHITE
+            };
+            
+            ui.label(egui::RichText::new(format!("Speed: {}", speed_text)).size(18.0).color(speed_color));
+        });
+    
     // Controls hint
     egui::Area::new(egui::Id::new("controls_hint"))
-        .anchor(egui::Align2::RIGHT_BOTTOM, [-10.0, -10.0])
+        .anchor(egui::Align2::LEFT_BOTTOM, [10.0, -10.0])
         .show(ctx, |ui| {
-            ui.label(egui::RichText::new("ESC - Pause").size(14.0).color(egui::Color32::GRAY));
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new("CONTROLS").size(16.0).color(egui::Color32::WHITE));
+                ui.label(egui::RichText::new("Mouse - Look/Turn").size(14.0).color(egui::Color32::GRAY));
+                ui.label(egui::RichText::new("A/D - Roll").size(14.0).color(egui::Color32::GRAY));
+                ui.label(egui::RichText::new("W/S - Speed Up/Down").size(14.0).color(egui::Color32::GRAY));
+                ui.label(egui::RichText::new("Space - Boost").size(14.0).color(egui::Color32::GRAY));
+                ui.label(egui::RichText::new("ESC - Pause").size(14.0).color(egui::Color32::GRAY));
+            });
         });
     
     // Check for pause

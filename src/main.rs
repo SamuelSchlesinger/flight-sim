@@ -34,7 +34,8 @@ fn main() {
             Update,
             (
                 flight_controls,
-                mouse_look,
+                spawn_engine_trails,
+                update_engine_trails,
                 spawn_targets_system,
                 collision_detection_system,
                 magnet_effect_system,
@@ -80,6 +81,12 @@ struct GameEntity;
 
 #[derive(Component)]
 struct MenuCamera;
+
+#[derive(Component)]
+struct EngineTrail {
+    lifetime: f32,
+    max_lifetime: f32,
+}
 
 fn setup_menu_camera(mut commands: Commands) {
     commands.spawn((
@@ -278,23 +285,35 @@ fn flight_controls(
     mut query: Query<(&mut Transform, &Aircraft)>,
     mut camera_query: Query<&mut Transform, (With<Camera3d>, Without<Aircraft>)>,
     game_state: Res<State<GameState>>,
+    mut mouse_delta: Local<Vec2>,
+    mut motion_events: EventReader<MouseMotion>,
 ) {
     if *game_state != GameState::Playing {
         return;
     }
     
+    // Accumulate mouse movement
+    for event in motion_events.read() {
+        *mouse_delta += event.delta;
+    }
+    
     for (mut transform, aircraft) in query.iter_mut() {
         let delta = time.delta_secs();
         
-        // Pitch controls (W/S)
-        if keyboard_input.pressed(KeyCode::KeyW) {
-            transform.rotate_local_x(-aircraft.pitch_speed * delta);
-        }
-        if keyboard_input.pressed(KeyCode::KeyS) {
-            transform.rotate_local_x(aircraft.pitch_speed * delta);
+        // Mouse controls for pitch and yaw (more intuitive for flying)
+        let sensitivity = 0.001;
+        if mouse_delta.length() > 0.0 {
+            // Yaw (left/right mouse movement)
+            transform.rotate_y(-mouse_delta.x * sensitivity);
+            
+            // Pitch (up/down mouse movement)
+            transform.rotate_local_x(-mouse_delta.y * sensitivity);
+            
+            // Reset mouse delta
+            *mouse_delta = Vec2::ZERO;
         }
         
-        // Roll controls (A/D)
+        // Roll controls (A/D) - banking turns
         if keyboard_input.pressed(KeyCode::KeyA) {
             transform.rotate_local_z(aircraft.roll_speed * delta);
         }
@@ -302,68 +321,48 @@ fn flight_controls(
             transform.rotate_local_z(-aircraft.roll_speed * delta);
         }
         
-        // Yaw controls (Q/E)
-        if keyboard_input.pressed(KeyCode::KeyQ) {
-            transform.rotate_local_y(aircraft.yaw_speed * delta);
+        // Speed controls
+        let mut current_speed = aircraft.speed;
+        
+        // W for speed up, S for slow down
+        if keyboard_input.pressed(KeyCode::KeyW) {
+            current_speed *= 1.5;
         }
-        if keyboard_input.pressed(KeyCode::KeyE) {
-            transform.rotate_local_y(-aircraft.yaw_speed * delta);
+        if keyboard_input.pressed(KeyCode::KeyS) {
+            current_speed *= 0.7;
         }
         
-        // Speed controls (Shift/Ctrl)
-        let mut current_speed = aircraft.speed;
-        if keyboard_input.pressed(KeyCode::ShiftLeft) {
-            current_speed *= 2.0;
-        }
-        if keyboard_input.pressed(KeyCode::ControlLeft) {
-            current_speed *= 0.5;
+        // Space for boost
+        if keyboard_input.pressed(KeyCode::Space) {
+            current_speed *= 2.5;
         }
         
         // Move forward
         let forward = transform.forward();
         transform.translation += forward * current_speed * delta;
         
-        // Keep aircraft above ground
-        if transform.translation.y < 5.0 {
-            transform.translation.y = 5.0;
+        // Keep aircraft above ground with smooth correction
+        let min_height = 10.0;
+        if transform.translation.y < min_height {
+            transform.translation.y = transform.translation.y.lerp(min_height, delta * 5.0);
         }
         
-        // Update camera to follow aircraft
+        // Update camera to follow aircraft with smoother movement
         if let Ok(mut camera_transform) = camera_query.single_mut() {
-            let camera_offset = Vec3::new(0.0, 5.0, 15.0);
+            let camera_offset = Vec3::new(0.0, 8.0, 20.0);
             let rotated_offset = transform.rotation * camera_offset;
-            camera_transform.translation = transform.translation + rotated_offset;
-            camera_transform.look_at(transform.translation, Vec3::Y);
+            let target_pos = transform.translation + rotated_offset;
+            
+            // Smooth camera follow
+            camera_transform.translation = camera_transform.translation.lerp(target_pos, delta * 8.0);
+            
+            // Look slightly ahead of the aircraft
+            let look_ahead = transform.translation + forward * 10.0;
+            camera_transform.look_at(look_ahead, Vec3::Y);
         }
     }
 }
 
-fn mouse_look(
-    mut motion_events: EventReader<MouseMotion>,
-    mut camera_query: Query<(&mut Transform, &FlightCamera), With<Camera3d>>,
-    mouse_button: Res<ButtonInput<MouseButton>>,
-    game_state: Res<State<GameState>>,
-) {
-    if *game_state != GameState::Playing {
-        return;
-    }
-    
-    if !mouse_button.pressed(MouseButton::Right) {
-        return;
-    }
-    
-    let Ok((mut transform, camera)) = camera_query.single_mut() else {
-        return;
-    };
-    
-    for event in motion_events.read() {
-        let yaw = -event.delta.x * camera.sensitivity;
-        let pitch = -event.delta.y * camera.sensitivity;
-        
-        transform.rotate_y(yaw);
-        transform.rotate_local_x(pitch);
-    }
-}
 
 fn update_challenge_timer(
     mut timer: ResMut<ChallengeTimer>,
@@ -413,5 +412,86 @@ fn save_coins(mut game_stats: ResMut<GameStats>, mut saved: Local<bool>) {
         let coins_earned = game_stats.score / 100;
         game_stats.coins += coins_earned;
         *saved = true;
+    }
+}
+
+fn spawn_engine_trails(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    aircraft_query: Query<&Transform, With<Aircraft>>,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    mut spawn_timer: Local<f32>,
+) {
+    *spawn_timer += time.delta_secs();
+    
+    // Spawn trails more frequently when boosting
+    let spawn_interval = if keyboard_input.pressed(KeyCode::Space) {
+        0.02
+    } else {
+        0.05
+    };
+    
+    if *spawn_timer < spawn_interval {
+        return;
+    }
+    
+    *spawn_timer = 0.0;
+    
+    for transform in aircraft_query.iter() {
+        // Spawn trail particles behind the aircraft
+        let trail_offset = transform.rotation * Vec3::new(0.0, -0.5, 3.0);
+        let trail_pos = transform.translation + trail_offset;
+        
+        // Base color changes with boost
+        let base_color = if keyboard_input.pressed(KeyCode::Space) {
+            Color::srgb(1.0, 0.5, 0.0) // Orange for boost
+        } else {
+            Color::srgb(0.3, 0.6, 1.0) // Blue for normal
+        };
+        
+        commands.spawn((
+            Mesh3d(meshes.add(Sphere::new(0.3))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color,
+                emissive: base_color.into(),
+                ..default()
+            })),
+            Transform::from_translation(trail_pos),
+            EngineTrail {
+                lifetime: 0.0,
+                max_lifetime: 0.5,
+            },
+            GameEntity,
+        ));
+    }
+}
+
+fn update_engine_trails(
+    mut commands: Commands,
+    mut trail_query: Query<(Entity, &mut Transform, &mut EngineTrail, &MeshMaterial3d<StandardMaterial>)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    time: Res<Time>,
+) {
+    for (entity, mut transform, mut trail, material_handle) in trail_query.iter_mut() {
+        trail.lifetime += time.delta_secs();
+        
+        let lifetime_ratio = trail.lifetime / trail.max_lifetime;
+        
+        // Fade out and shrink
+        if let Some(material) = materials.get_mut(&material_handle.0) {
+            let alpha = 1.0 - lifetime_ratio;
+            material.base_color.set_alpha(alpha);
+            
+            // Scale down
+            let scale = 1.0 - (lifetime_ratio * 0.8);
+            transform.scale = Vec3::splat(scale);
+        }
+        
+        // Remove when lifetime expires
+        if trail.lifetime >= trail.max_lifetime {
+            commands.entity(entity).despawn();
+        }
     }
 }
