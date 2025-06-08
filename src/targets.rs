@@ -8,6 +8,16 @@ pub struct Target {
     pub target_type: TargetType,
 }
 
+#[derive(Component)]
+pub struct Balloon {
+    pub base_height: f32,
+    pub float_phase: f32,
+    pub sway_phase: f32,
+}
+
+#[derive(Component)]
+pub struct BalloonString;
+
 #[derive(Debug, Clone, Copy)]
 pub enum TargetType {
     Normal,
@@ -92,21 +102,73 @@ pub fn spawn_targets_system(
                 }
             };
             
-            // Spawn the target
-            commands.spawn((
-                Mesh3d(meshes.add(Sphere::new(1.5 * scale))),
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: color,
-                    emissive: color.to_linear() * 0.5,
-                    ..default()
-                })),
+            // Spawn balloon entity
+            let balloon_entity = commands.spawn((
                 Transform::from_translation(position),
+                Visibility::default(),
                 Target {
                     points,
                     target_type,
                 },
                 Collectible,
-            ));
+                Balloon {
+                    base_height: position.y,
+                    float_phase: fastrand::f32() * std::f32::consts::TAU,
+                    sway_phase: fastrand::f32() * std::f32::consts::TAU,
+                },
+            )).id();
+            
+            // Balloon body (slightly elongated sphere)
+            let balloon_body = commands.spawn((
+                Mesh3d(meshes.add(Sphere::new(1.5 * scale))),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    base_color: color,
+                    emissive: color.to_linear() * 0.3,
+                    metallic: 0.2,
+                    perceptual_roughness: 0.3,
+                    ..default()
+                })),
+                Transform::from_scale(Vec3::new(1.0, 1.2, 1.0)),
+            )).id();
+            
+            // Balloon highlight (small sphere for shine effect)
+            let highlight = commands.spawn((
+                Mesh3d(meshes.add(Sphere::new(0.3 * scale))),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    base_color: Color::srgba(1.0, 1.0, 1.0, 0.6),
+                    emissive: Color::WHITE.into(),
+                    alpha_mode: AlphaMode::Blend,
+                    ..default()
+                })),
+                Transform::from_xyz(0.5 * scale, 0.8 * scale, 0.5 * scale),
+            )).id();
+            
+            // String segments
+            let string_length = 4.0;
+            let segments = 5;
+            let mut string_entities = vec![];
+            
+            for i in 0..segments {
+                let t = (i as f32) / (segments as f32 - 1.0);
+                let y_offset = -1.5 * scale - t * string_length;
+                
+                let string_segment = commands.spawn((
+                    Mesh3d(meshes.add(Cylinder::new(0.02, string_length / segments as f32))),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        base_color: Color::srgb(0.8, 0.8, 0.8),
+                        ..default()
+                    })),
+                    Transform::from_xyz(0.0, y_offset, 0.0),
+                    BalloonString,
+                )).id();
+                
+                string_entities.push(string_segment);
+            }
+            
+            // Build hierarchy
+            commands.entity(balloon_entity).add_children(&[balloon_body]);
+            commands.entity(balloon_body).add_children(&[highlight]);
+            commands.entity(balloon_body).add_children(&string_entities);
         }
     }
 }
@@ -114,7 +176,7 @@ pub fn spawn_targets_system(
 pub fn collision_detection_system(
     mut commands: Commands,
     aircraft_query: Query<&Transform, With<Aircraft>>,
-    targets_query: Query<(Entity, &Transform, &Target), With<Collectible>>,
+    targets_query: Query<(Entity, &Transform, &Target, &Children), With<Collectible>>,
     mut game_stats: ResMut<GameStats>,
     mut challenge_timer: ResMut<ChallengeTimer>,
     _game_mode: Res<CurrentGameMode>,
@@ -125,7 +187,7 @@ pub fn collision_detection_system(
         let magnet_range = get_magnet_range(upgrades.magnet_level);
         let collection_range = 5.0 + magnet_range;
         
-        for (entity, target_transform, target) in targets_query.iter() {
+        for (entity, target_transform, target, _children) in targets_query.iter() {
             let distance = aircraft_transform.translation.distance(target_transform.translation);
             
             if distance < collection_range {
@@ -166,7 +228,7 @@ pub fn collision_detection_system(
                     target_type: target.target_type,
                 });
                 
-                // Remove the target
+                // Remove the balloon and all its children
                 commands.entity(entity).despawn();
             }
         }
@@ -174,7 +236,7 @@ pub fn collision_detection_system(
 }
 
 pub fn magnet_effect_system(
-    mut targets_query: Query<(&mut Transform, &Target), With<Collectible>>,
+    mut targets_query: Query<(&mut Transform, &Target, &Balloon), With<Collectible>>,
     aircraft_query: Query<&Transform, (With<Aircraft>, Without<Target>)>,
     upgrades: Res<UpgradeData>,
     time: Res<Time>,
@@ -187,7 +249,7 @@ pub fn magnet_effect_system(
         let magnet_range = get_magnet_range(upgrades.magnet_level) + 20.0;
         let magnet_strength = 15.0 * upgrades.magnet_level as f32;
         
-        for (mut target_transform, _) in targets_query.iter_mut() {
+        for (mut target_transform, _, _balloon) in targets_query.iter_mut() {
             let distance = aircraft_transform.translation.distance(target_transform.translation);
             
             if distance < magnet_range {
@@ -277,16 +339,48 @@ pub fn combo_timeout_system(
 }
 
 pub fn animate_targets(
-    mut query: Query<(&mut Transform, &Target), With<Collectible>>,
+    mut balloons: Query<(&mut Transform, &Balloon, &Target), With<Collectible>>,
+    mut strings: Query<&mut Transform, (With<BalloonString>, Without<Balloon>, Without<Collectible>)>,
     time: Res<Time>,
 ) {
-    for (mut transform, target) in query.iter_mut() {
-        // Rotate targets
-        transform.rotate_y(time.delta_secs() * 2.0);
+    for (mut transform, balloon, target) in balloons.iter_mut() {
+        let elapsed = time.elapsed_secs();
         
-        // Make golden targets bob up and down
-        if matches!(target.target_type, TargetType::Golden) {
-            transform.translation.y += (time.elapsed_secs() * 3.0).sin() * 0.05;
-        }
+        // Floating motion - gentle up and down
+        let float_amount = match target.target_type {
+            TargetType::Golden => 3.0,
+            TargetType::Speed => 2.5,
+            _ => 2.0,
+        };
+        let float_offset = (elapsed * 0.8 + balloon.float_phase).sin() * float_amount;
+        
+        // Swaying motion - side to side
+        let sway_amount = 1.5;
+        let sway_x = (elapsed * 0.6 + balloon.sway_phase).sin() * sway_amount;
+        let sway_z = (elapsed * 0.7 + balloon.sway_phase + 1.0).sin() * sway_amount * 0.7;
+        
+        // Apply motion
+        transform.translation.y = balloon.base_height + float_offset;
+        transform.translation.x += sway_x * time.delta_secs();
+        transform.translation.z += sway_z * time.delta_secs();
+        
+        // Gentle rotation
+        transform.rotate_y(time.delta_secs() * 0.5);
+        
+        // Tilt based on movement
+        let tilt_amount = 0.1;
+        transform.rotation = Quat::from_euler(
+            EulerRot::XYZ,
+            sway_z * tilt_amount,
+            transform.rotation.to_euler(EulerRot::XYZ).1,
+            -sway_x * tilt_amount,
+        );
+    }
+    
+    // Animate strings with physics-like motion
+    for mut string_transform in strings.iter_mut() {
+        // Add slight sway to strings
+        let sway = (time.elapsed_secs() * 2.0).sin() * 0.02;
+        string_transform.rotation = Quat::from_rotation_z(sway);
     }
 }

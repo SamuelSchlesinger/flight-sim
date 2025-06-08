@@ -99,7 +99,6 @@ pub fn game_hud(
     challenge_timer: Res<ChallengeTimer>,
     game_mode: Res<CurrentGameMode>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut game_state: ResMut<NextState<GameState>>,
 ) {
     let ctx = contexts.ctx_mut();
     
@@ -193,36 +192,97 @@ pub fn game_hud(
             });
         });
     
-    // Check for pause
-    if keyboard_input.just_pressed(KeyCode::Escape) {
-        game_state.set(GameState::Paused);
-    }
+    // Pause handling moved to handle_escape_key in main.rs
 }
 
 pub fn pause_menu(
     mut contexts: EguiContexts,
     mut game_state: ResMut<NextState<GameState>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut game_stats: ResMut<GameStats>,
+    mut challenge_timer: ResMut<ChallengeTimer>,
+    game_mode: Res<CurrentGameMode>,
 ) {
     let ctx = contexts.ctx_mut();
     
+    // Dark overlay
+    egui::Area::new(egui::Id::new("pause_overlay"))
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(-10000.0, -10000.0),
+                    egui::vec2(20000.0, 20000.0)
+                ),
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180)
+            );
+        });
+    
     egui::CentralPanel::default().show(ctx, |ui| {
         ui.vertical_centered(|ui| {
-            ui.add_space(200.0);
+            ui.add_space(150.0);
             
-            ui.heading(egui::RichText::new("PAUSED").size(48.0));
+            ui.heading(egui::RichText::new("⏸️ GAME PAUSED").size(56.0).color(egui::Color32::WHITE));
+            ui.add_space(20.0);
+            
+            ui.label(egui::RichText::new(format!("Current Score: {}", game_stats.score)).size(24.0).color(egui::Color32::LIGHT_GRAY));
             ui.add_space(40.0);
             
-            if ui.add_sized([200.0, 50.0], egui::Button::new(egui::RichText::new("Resume").size(20.0))).clicked() 
+            if ui.add_sized([250.0, 60.0], egui::Button::new(egui::RichText::new("▶️ Resume").size(24.0))).clicked() 
                 || keyboard_input.just_pressed(KeyCode::Escape) {
+                game_state.set(GameState::Playing);
+            }
+            ui.label(egui::RichText::new("Press ESC to resume").size(14.0).color(egui::Color32::GRAY));
+            
+            ui.add_space(20.0);
+            
+            if ui.add_sized([250.0, 60.0], egui::Button::new(egui::RichText::new("🔄 Restart").size(24.0))).clicked() {
+                // Reset game stats for restart
+                game_stats.score = 0;
+                game_stats.combo = 0;
+                game_stats.targets_hit = 0;
+                game_stats.time_played = 0.0;
+                
+                // Reset timer based on game mode
+                match game_mode.mode {
+                    GameMode::TimeAttack => {
+                        challenge_timer.time_remaining = 60.0;
+                        challenge_timer.total_time = 60.0;
+                    }
+                    GameMode::Survival => {
+                        challenge_timer.time_remaining = 10.0;
+                        challenge_timer.total_time = 10.0;
+                    }
+                    GameMode::RaceTheClock => {
+                        challenge_timer.time_remaining = 120.0;
+                        challenge_timer.total_time = 120.0;
+                    }
+                    _ => {}
+                }
+                
                 game_state.set(GameState::Playing);
             }
             
             ui.add_space(20.0);
             
-            if ui.add_sized([200.0, 50.0], egui::Button::new(egui::RichText::new("Main Menu").size(20.0))).clicked() {
+            if ui.add_sized([250.0, 60.0], egui::Button::new(egui::RichText::new("🏠 Main Menu").size(24.0))).clicked() {
                 game_state.set(GameState::MainMenu);
             }
+            
+            ui.add_space(20.0);
+            
+            if ui.add_sized([250.0, 60.0], egui::Button::new(egui::RichText::new("🚪 Quit Game").size(24.0))).clicked() {
+                std::process::exit(0);
+            }
+            
+            ui.add_space(40.0);
+            ui.separator();
+            ui.add_space(20.0);
+            
+            ui.label(egui::RichText::new("⚙️ SETTINGS").size(20.0).color(egui::Color32::WHITE));
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("Press F11 to toggle fullscreen").size(16.0).color(egui::Color32::LIGHT_GRAY));
         });
     });
 }
@@ -230,7 +290,9 @@ pub fn pause_menu(
 pub fn game_over_screen(
     mut contexts: EguiContexts,
     mut game_state: ResMut<NextState<GameState>>,
-    game_stats: Res<GameStats>,
+    mut game_stats: ResMut<GameStats>,
+    mut challenge_timer: ResMut<ChallengeTimer>,
+    game_mode: Res<CurrentGameMode>,
 ) {
     let ctx = contexts.ctx_mut();
     
@@ -253,6 +315,29 @@ pub fn game_over_screen(
             ui.add_space(40.0);
             
             if ui.add_sized([200.0, 50.0], egui::Button::new(egui::RichText::new("Play Again").size(20.0))).clicked() {
+                // Reset game stats for play again
+                game_stats.score = 0;
+                game_stats.combo = 0;
+                game_stats.targets_hit = 0;
+                game_stats.time_played = 0.0;
+                
+                // Reset timer based on game mode
+                match game_mode.mode {
+                    GameMode::TimeAttack => {
+                        challenge_timer.time_remaining = 60.0;
+                        challenge_timer.total_time = 60.0;
+                    }
+                    GameMode::Survival => {
+                        challenge_timer.time_remaining = 10.0;
+                        challenge_timer.total_time = 10.0;
+                    }
+                    GameMode::RaceTheClock => {
+                        challenge_timer.time_remaining = 120.0;
+                        challenge_timer.total_time = 120.0;
+                    }
+                    _ => {}
+                }
+                
                 game_state.set(GameState::Playing);
             }
             

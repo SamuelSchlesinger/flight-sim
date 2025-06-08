@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy::pbr::CascadeShadowConfigBuilder;
 use bevy::input::mouse::MouseMotion;
+use bevy::window::{WindowMode, PrimaryWindow};
 use bevy_egui::EguiPlugin;
 
 mod game_state;
@@ -13,7 +14,14 @@ use targets::*;
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, EguiPlugin { enable_multipass_for_primary_context: false }))
+        .add_plugins((DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "Sky Hunter".to_string(),
+                mode: WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
+                ..default()
+            }),
+            ..default()
+        }), EguiPlugin { enable_multipass_for_primary_context: false }))
         .init_state::<GameState>()
         .init_resource::<CurrentGameMode>()
         .init_resource::<GameStats>()
@@ -21,8 +29,9 @@ fn main() {
         .init_resource::<UpgradeData>()
         .add_event::<TargetHitEvent>()
         .add_systems(Startup, setup_menu_camera)
-        .add_systems(OnEnter(GameState::Playing), setup_game)
-        .add_systems(OnExit(GameState::Playing), cleanup_game)
+        .add_systems(OnEnter(GameState::Playing), (setup_game, capture_mouse))
+        .add_systems(OnExit(GameState::Playing), release_mouse)
+        .add_systems(OnEnter(GameState::MainMenu), (cleanup_game_entities, cleanup_game_stats))
         .add_systems(
             Update,
             (
@@ -46,16 +55,20 @@ fn main() {
                 update_challenge_timer,
                 check_game_over,
                 game_hud,
+                handle_escape_key,
             ).run_if(in_state(GameState::Playing)),
         )
+        .add_systems(OnEnter(GameState::Paused), release_mouse)
+        .add_systems(OnExit(GameState::Paused), capture_mouse)
         .add_systems(
             Update,
-            pause_menu.run_if(in_state(GameState::Paused)),
+            (pause_menu, toggle_fullscreen).run_if(in_state(GameState::Paused)),
         )
         .add_systems(
             Update,
             (game_over_screen, save_coins).run_if(in_state(GameState::GameOver)),
         )
+        .add_systems(OnExit(GameState::GameOver), cleanup_game)
         .add_systems(
             Update,
             upgrade_shop_ui.run_if(in_state(GameState::UpgradeShop)),
@@ -69,11 +82,16 @@ pub struct Aircraft {
     pitch_speed: f32,
     roll_speed: f32,
     yaw_speed: f32,
+    current_roll: f32,
+    target_roll: f32,
+    boost_timer: f32,
 }
 
 #[derive(Component)]
 struct FlightCamera {
     sensitivity: f32,
+    shake_amount: f32,
+    shake_timer: f32,
 }
 
 #[derive(Component)]
@@ -105,15 +123,17 @@ fn setup_game(
     upgrades: Res<UpgradeData>,
 ) {
     // Remove menu camera
-    if let Ok(camera) = menu_camera.single() {
+    for camera in menu_camera.iter() {
         commands.entity(camera).despawn();
     }
     
-    // Ground plane
+    // Ground plane with improved material
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(2000.0, 2000.0))),
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(3000.0, 3000.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.3, 0.5, 0.3),
+            base_color: Color::srgb(0.2, 0.4, 0.2),
+            metallic: 0.0,
+            perceptual_roughness: 0.9,
             ..default()
         })),
         Transform::from_xyz(0.0, 0.0, 0.0),
@@ -133,6 +153,9 @@ fn setup_game(
             pitch_speed: 1.0 * maneuverability_multiplier,
             roll_speed: 1.5 * maneuverability_multiplier,
             yaw_speed: 1.0 * maneuverability_multiplier,
+            current_roll: 0.0,
+            target_roll: 0.0,
+            boost_timer: 0.0,
         },
         GameEntity,
     )).id();
@@ -223,10 +246,16 @@ fn setup_game(
     // Camera attached to aircraft
     commands.spawn((
         Camera3d::default(),
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::srgb(0.5, 0.7, 1.0)),
+            ..default()
+        },
         Transform::from_xyz(0.0, 55.0, 15.0)
             .looking_at(Vec3::new(0.0, 50.0, 0.0), Vec3::Y),
         FlightCamera {
             sensitivity: 0.002,
+            shake_amount: 0.0,
+            shake_timer: 0.0,
         },
         GameEntity,
     ));
@@ -234,11 +263,11 @@ fn setup_game(
     // Sun light
     commands.spawn((
         DirectionalLight {
-            illuminance: 15000.0,
+            illuminance: 20000.0,
             shadows_enabled: true,
             ..default()
         },
-        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -1.0, -0.5, 0.0)),
+        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.8, -0.3, 0.0)),
         CascadeShadowConfigBuilder {
             num_cascades: 4,
             maximum_distance: 1000.0,
@@ -249,26 +278,87 @@ fn setup_game(
     
     // Ambient light
     commands.insert_resource(AmbientLight {
-        color: Color::WHITE,
-        brightness: 400.0,
+        color: Color::srgb(0.8, 0.85, 1.0),
+        brightness: 600.0,
         affects_lightmapped_meshes: false,
     });
+    
+    // Add some environmental decoration - trees
+    for _ in 0..50 {
+        let x = (fastrand::f32() - 0.5) * 1000.0;
+        let z = (fastrand::f32() - 0.5) * 1000.0;
+        let height = 10.0 + fastrand::f32() * 15.0;
+        
+        // Tree trunk
+        commands.spawn((
+            Mesh3d(meshes.add(Cylinder::new(2.0, height))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.4, 0.3, 0.2),
+                perceptual_roughness: 0.9,
+                ..default()
+            })),
+            Transform::from_xyz(x, height / 2.0, z),
+            GameEntity,
+        ));
+        
+        // Tree leaves
+        commands.spawn((
+            Mesh3d(meshes.add(Sphere::new(8.0 + fastrand::f32() * 4.0))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.2, 0.6, 0.2),
+                perceptual_roughness: 0.8,
+                ..default()
+            })),
+            Transform::from_xyz(x, height + 5.0, z),
+            GameEntity,
+        ));
+    }
+    
+    // Add fluffy clouds
+    for _ in 0..30 {
+        let x = (fastrand::f32() - 0.5) * 2000.0;
+        let z = (fastrand::f32() - 0.5) * 2000.0;
+        let y = 150.0 + fastrand::f32() * 150.0;
+        
+        // Create cloud cluster for fluffiness
+        let cloud_center = Vec3::new(x, y, z);
+        let cloud_parts = 3 + fastrand::usize(..4);
+        
+        for _ in 0..cloud_parts {
+            let offset = Vec3::new(
+                (fastrand::f32() - 0.5) * 40.0,
+                (fastrand::f32() - 0.5) * 20.0,
+                (fastrand::f32() - 0.5) * 40.0,
+            );
+            
+            let size = 20.0 + fastrand::f32() * 30.0;
+            let opacity = 0.4 + fastrand::f32() * 0.2;
+            
+            commands.spawn((
+                Mesh3d(meshes.add(Sphere::new(size))),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    base_color: Color::srgba(1.0, 1.0, 1.0, opacity),
+                    alpha_mode: AlphaMode::Blend,
+                    perceptual_roughness: 1.0,
+                    double_sided: true,
+                    cull_mode: None,
+                    ..default()
+                })),
+                Transform::from_translation(cloud_center + offset)
+                    .with_scale(Vec3::new(1.5, 0.7, 1.5)), // Flatten clouds
+                GameEntity,
+            ));
+        }
+    }
 }
 
 fn cleanup_game(
     mut commands: Commands,
     query: Query<Entity, With<GameEntity>>,
-    mut game_stats: ResMut<GameStats>,
 ) {
     for entity in query.iter() {
         commands.entity(entity).despawn();
     }
-    
-    // Reset per-game stats but keep persistent ones
-    game_stats.score = 0;
-    game_stats.combo = 0;
-    game_stats.targets_hit = 0;
-    game_stats.time_played = 0.0;
     
     // Recreate menu camera
     commands.spawn((
@@ -279,11 +369,19 @@ fn cleanup_game(
     ));
 }
 
+fn cleanup_game_stats(mut game_stats: ResMut<GameStats>) {
+    // Reset per-game stats but keep persistent ones
+    game_stats.score = 0;
+    game_stats.combo = 0;
+    game_stats.targets_hit = 0;
+    game_stats.time_played = 0.0;
+}
+
 fn flight_controls(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
-    mut query: Query<(&mut Transform, &Aircraft)>,
-    mut camera_query: Query<&mut Transform, (With<Camera3d>, Without<Aircraft>)>,
+    mut query: Query<(&mut Transform, &mut Aircraft)>,
+    mut camera_query: Query<(&mut Transform, &mut FlightCamera), Without<Aircraft>>,
     game_state: Res<State<GameState>>,
     mut mouse_delta: Local<Vec2>,
     mut motion_events: EventReader<MouseMotion>,
@@ -297,31 +395,48 @@ fn flight_controls(
         *mouse_delta += event.delta;
     }
     
-    for (mut transform, aircraft) in query.iter_mut() {
+    for (mut transform, mut aircraft) in query.iter_mut() {
         let delta = time.delta_secs();
         
-        // Mouse controls for pitch and yaw (more intuitive for flying)
-        let sensitivity = 0.001;
+        // Enhanced mouse controls with smoothing
+        let sensitivity = 0.0008;
         if mouse_delta.length() > 0.0 {
-            // Yaw (left/right mouse movement)
-            transform.rotate_y(-mouse_delta.x * sensitivity);
+            // Smooth mouse input
+            let smoothed_x = mouse_delta.x.clamp(-100.0, 100.0);
+            let smoothed_y = mouse_delta.y.clamp(-100.0, 100.0);
             
-            // Pitch (up/down mouse movement)
-            transform.rotate_local_x(-mouse_delta.y * sensitivity);
+            // Yaw (left/right mouse movement)
+            transform.rotate_y(-smoothed_x * sensitivity);
+            
+            // Pitch (up/down mouse movement) with limits
+            let pitch_amount = -smoothed_y * sensitivity;
+            let current_pitch = transform.rotation.to_euler(EulerRot::YXZ).1;
+            if (current_pitch + pitch_amount).abs() < 1.2 { // Limit pitch to ~70 degrees
+                transform.rotate_local_x(pitch_amount);
+            }
+            
+            // Auto-roll based on yaw for more realistic banking
+            aircraft.target_roll = -smoothed_x * 0.01;
             
             // Reset mouse delta
             *mouse_delta = Vec2::ZERO;
+        } else {
+            aircraft.target_roll = 0.0;
         }
         
-        // Roll controls (A/D) - banking turns
+        // Manual roll controls (A/D) - banking turns
         if keyboard_input.pressed(KeyCode::KeyA) {
-            transform.rotate_local_z(aircraft.roll_speed * delta);
+            aircraft.target_roll = 0.5;
         }
         if keyboard_input.pressed(KeyCode::KeyD) {
-            transform.rotate_local_z(-aircraft.roll_speed * delta);
+            aircraft.target_roll = -0.5;
         }
         
-        // Speed controls
+        // Smooth roll interpolation
+        aircraft.current_roll = aircraft.current_roll.lerp(aircraft.target_roll, delta * 3.0);
+        transform.rotate_local_z(aircraft.current_roll * aircraft.roll_speed * delta);
+        
+        // Speed controls with boost management
         let mut current_speed = aircraft.speed;
         
         // W for speed up, S for slow down
@@ -332,9 +447,15 @@ fn flight_controls(
             current_speed *= 0.7;
         }
         
-        // Space for boost
+        // Space for boost with timer
         if keyboard_input.pressed(KeyCode::Space) {
             current_speed *= 2.5;
+            aircraft.boost_timer = 0.1;
+        }
+        
+        // Update boost timer
+        if aircraft.boost_timer > 0.0 {
+            aircraft.boost_timer -= delta;
         }
         
         // Move forward
@@ -345,20 +466,51 @@ fn flight_controls(
         let min_height = 10.0;
         if transform.translation.y < min_height {
             transform.translation.y = transform.translation.y.lerp(min_height, delta * 5.0);
+            // Add upward pitch correction when too low
+            if transform.translation.y < min_height + 5.0 {
+                transform.rotate_local_x(delta * 0.5);
+            }
         }
         
-        // Update camera to follow aircraft with smoother movement
-        if let Ok(mut camera_transform) = camera_query.single_mut() {
-            let camera_offset = Vec3::new(0.0, 8.0, 20.0);
+        // Update camera to follow aircraft with enhanced movement
+        if let Ok((mut camera_transform, mut camera)) = camera_query.single_mut() {
+            // Dynamic camera offset based on speed and boost
+            let base_offset = Vec3::new(0.0, 8.0, 20.0);
+            let speed_factor = if keyboard_input.pressed(KeyCode::Space) { 1.5 } else if keyboard_input.pressed(KeyCode::KeyW) { 1.2 } else { 1.0 };
+            let camera_offset = base_offset * Vec3::new(1.0, 1.0, speed_factor);
+            
             let rotated_offset = transform.rotation * camera_offset;
             let target_pos = transform.translation + rotated_offset;
             
-            // Smooth camera follow
-            camera_transform.translation = camera_transform.translation.lerp(target_pos, delta * 8.0);
+            // Smooth camera follow with different speeds for different axes
+            let follow_speed = Vec3::new(8.0, 6.0, 8.0);
+            camera_transform.translation.x = camera_transform.translation.x.lerp(target_pos.x, delta * follow_speed.x);
+            camera_transform.translation.y = camera_transform.translation.y.lerp(target_pos.y, delta * follow_speed.y);
+            camera_transform.translation.z = camera_transform.translation.z.lerp(target_pos.z, delta * follow_speed.z);
             
-            // Look slightly ahead of the aircraft
-            let look_ahead = transform.translation + forward * 10.0;
+            // Camera shake when boosting
+            if aircraft.boost_timer > 0.0 {
+                camera.shake_amount = 2.0;
+                camera.shake_timer = 0.1;
+            }
+            
+            // Apply camera shake
+            if camera.shake_timer > 0.0 {
+                camera.shake_timer -= delta;
+                let shake_offset = Vec3::new(
+                    (fastrand::f32() - 0.5) * camera.shake_amount,
+                    (fastrand::f32() - 0.5) * camera.shake_amount,
+                    0.0
+                );
+                camera_transform.translation += shake_offset;
+            }
+            
+            // Look slightly ahead of the aircraft with banking tilt
+            let look_ahead = transform.translation + forward * 15.0;
             camera_transform.look_at(look_ahead, Vec3::Y);
+            
+            // Add camera roll to match aircraft banking
+            camera_transform.rotate_z(aircraft.current_roll * 0.3);
         }
     }
 }
@@ -441,30 +593,38 @@ fn spawn_engine_trails(
     
     for transform in aircraft_query.iter() {
         // Spawn trail particles behind the aircraft
-        let trail_offset = transform.rotation * Vec3::new(0.0, -0.5, 3.0);
-        let trail_pos = transform.translation + trail_offset;
+        // Removed unused variable
         
         // Base color changes with boost
-        let base_color = if keyboard_input.pressed(KeyCode::Space) {
-            Color::srgb(1.0, 0.5, 0.0) // Orange for boost
+        let (base_color, emissive_strength, trail_size) = if keyboard_input.pressed(KeyCode::Space) {
+            (Color::srgb(1.0, 0.4, 0.1), 3.0, 0.5) // Orange for boost
+        } else if keyboard_input.pressed(KeyCode::KeyW) {
+            (Color::srgb(0.4, 0.7, 1.0), 2.0, 0.4) // Bright blue for speed
         } else {
-            Color::srgb(0.3, 0.6, 1.0) // Blue for normal
+            (Color::srgb(0.2, 0.5, 0.9), 1.5, 0.3) // Blue for normal
         };
         
-        commands.spawn((
-            Mesh3d(meshes.add(Sphere::new(0.3))),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color,
-                emissive: base_color.into(),
-                ..default()
-            })),
-            Transform::from_translation(trail_pos),
-            EngineTrail {
-                lifetime: 0.0,
-                max_lifetime: 0.5,
-            },
-            GameEntity,
-        ));
+        // Spawn two trails for each engine
+        for offset in [Vec3::new(-3.0, -0.5, 3.0), Vec3::new(3.0, -0.5, 3.0)] {
+            let trail_offset = transform.rotation * offset;
+            let trail_pos = transform.translation + trail_offset;
+            
+            commands.spawn((
+                Mesh3d(meshes.add(Sphere::new(trail_size))),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    base_color,
+                    emissive: (base_color.to_linear() * emissive_strength).into(),
+                    alpha_mode: AlphaMode::Blend,
+                    ..default()
+                })),
+                Transform::from_translation(trail_pos),
+                EngineTrail {
+                    lifetime: 0.0,
+                    max_lifetime: if keyboard_input.pressed(KeyCode::Space) { 0.8 } else { 0.5 },
+                },
+                GameEntity,
+            ));
+        }
     }
 }
 
@@ -493,5 +653,67 @@ fn update_engine_trails(
         if trail.lifetime >= trail.max_lifetime {
             commands.entity(entity).despawn();
         }
+    }
+}
+
+fn handle_escape_key(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut game_state: ResMut<NextState<GameState>>,
+) {
+    if keyboard_input.just_pressed(KeyCode::Escape) {
+        game_state.set(GameState::Paused);
+    }
+}
+
+fn toggle_fullscreen(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    if keyboard_input.just_pressed(KeyCode::F11) {
+        if let Ok(mut window) = windows.single_mut() {
+            window.mode = match window.mode {
+                WindowMode::BorderlessFullscreen(_) => WindowMode::Windowed,
+                _ => WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
+            };
+        }
+    }
+}
+
+fn capture_mouse(
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    if let Ok(mut window) = windows.single_mut() {
+        window.cursor_options.grab_mode = bevy::window::CursorGrabMode::Locked;
+        window.cursor_options.visible = false;
+    }
+}
+
+fn release_mouse(
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    if let Ok(mut window) = windows.single_mut() {
+        window.cursor_options.grab_mode = bevy::window::CursorGrabMode::None;
+        window.cursor_options.visible = true;
+    }
+}
+
+fn cleanup_game_entities(
+    mut commands: Commands,
+    query: Query<Entity, With<GameEntity>>,
+    cameras: Query<Entity, With<MenuCamera>>,
+) {
+    // Remove all game entities
+    for entity in query.iter() {
+        commands.entity(entity).despawn();
+    }
+    
+    // Recreate menu camera if it doesn't exist
+    if cameras.is_empty() {
+        commands.spawn((
+            Camera3d::default(),
+            Transform::from_xyz(0.0, 100.0, 200.0)
+                .looking_at(Vec3::new(0.0, 50.0, 0.0), Vec3::Y),
+            MenuCamera,
+        ));
     }
 }
