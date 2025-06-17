@@ -9,6 +9,11 @@ pub struct Enemy {
     pub damage: f32,
     pub attack_range: f32,
     pub pursuit_range: f32,
+    pub enemy_type: EnemyType,
+    pub behavior_state: EnemyBehaviorState,
+    pub state_timer: f32,
+    pub evasion_angle: f32,
+    pub preferred_distance: f32,
 }
 
 #[derive(Component)]
@@ -44,6 +49,16 @@ pub enum EnemyType {
     Ace,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EnemyBehaviorState {
+    Patrol,
+    Pursuing,
+    Attacking,
+    Evading,
+    Strafing,
+    Retreating,
+}
+
 pub fn spawn_enemies_system(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -52,13 +67,16 @@ pub fn spawn_enemies_system(
     enemies: Query<Entity, With<Enemy>>,
     time: Res<Time>,
     mut spawn_timer: Local<f32>,
+    game_stats: Res<crate::game_state::GameStats>,
 ) {
     let enemy_count = enemies.iter().count();
-    let max_enemies = 5;
+    let max_enemies = (5.0 * game_stats.difficulty_level).min(10.0) as usize;
     
     *spawn_timer += time.delta_secs();
     
-    if enemy_count < max_enemies && *spawn_timer > 3.0 {
+    let spawn_interval = 3.0 / game_stats.difficulty_level.sqrt(); // Faster spawning at higher difficulty
+    
+    if enemy_count < max_enemies && *spawn_timer > spawn_interval {
         *spawn_timer = 0.0;
         
         if let Ok(player_transform) = player_query.single() {
@@ -73,19 +91,22 @@ pub fn spawn_enemies_system(
                 player_transform.translation.z + angle.sin() * spawn_distance,
             );
             
-            // Determine enemy type
-            let enemy_type = if fastrand::f32() < 0.1 {
+            // Determine enemy type based on difficulty
+            let ace_chance = 0.05 + (game_stats.difficulty_level - 1.0) * 0.1;
+            let bomber_chance = 0.2 + (game_stats.difficulty_level - 1.0) * 0.1;
+            
+            let enemy_type = if fastrand::f32() < ace_chance {
                 EnemyType::Ace
-            } else if fastrand::f32() < 0.3 {
+            } else if fastrand::f32() < bomber_chance {
                 EnemyType::Bomber
             } else {
                 EnemyType::Fighter
             };
             
-            let (color, scale, speed, health, damage) = match enemy_type {
-                EnemyType::Fighter => (Color::srgb(0.8, 0.2, 0.2), 2.0, 60.0, 50.0, 10.0),
-                EnemyType::Bomber => (Color::srgb(0.4, 0.4, 0.4), 3.0, 40.0, 100.0, 20.0),
-                EnemyType::Ace => (Color::srgb(0.2, 0.2, 0.8), 1.8, 80.0, 75.0, 15.0),
+            let (color, scale, speed, health, damage, preferred_distance) = match enemy_type {
+                EnemyType::Fighter => (Color::srgb(0.8, 0.2, 0.2), 2.0, 60.0, 50.0, 10.0, 40.0),
+                EnemyType::Bomber => (Color::srgb(0.4, 0.4, 0.4), 3.0, 40.0, 100.0, 20.0, 60.0),
+                EnemyType::Ace => (Color::srgb(0.2, 0.2, 0.8), 1.8, 80.0, 75.0, 15.0, 30.0),
             };
             
             // Spawn enemy aircraft
@@ -99,6 +120,11 @@ pub fn spawn_enemies_system(
                     damage,
                     attack_range: 50.0,
                     pursuit_range: 200.0,
+                    enemy_type,
+                    behavior_state: EnemyBehaviorState::Patrol,
+                    state_timer: 0.0,
+                    evasion_angle: 0.0,
+                    preferred_distance,
                 },
                 Health {
                     current: health,
@@ -148,36 +174,162 @@ pub fn spawn_enemies_system(
 }
 
 pub fn enemy_ai_system(
-    mut enemy_query: Query<(&mut Transform, &Enemy), Without<Aircraft>>,
-    player_query: Query<&Transform, With<Aircraft>>,
+    mut enemy_query: Query<(&mut Transform, &mut Enemy), Without<Aircraft>>,
+    player_query: Query<(&Transform, &crate::Aircraft), With<Aircraft>>,
     time: Res<Time>,
 ) {
-    if let Ok(player_transform) = player_query.single() {
-        for (mut enemy_transform, enemy) in enemy_query.iter_mut() {
+    if let Ok((player_transform, player_aircraft)) = player_query.single() {
+        let player_velocity = player_transform.forward() * player_aircraft.speed;
+        
+        for (mut enemy_transform, mut enemy) in enemy_query.iter_mut() {
             let to_player = player_transform.translation - enemy_transform.translation;
             let distance = to_player.length();
             
-            if distance < enemy.pursuit_range {
-                // Look at player
-                let look_direction = to_player.normalize();
-                let target_rotation = Transform::IDENTITY
-                    .looking_at(look_direction, Vec3::Y)
-                    .rotation;
-                
-                // Smooth rotation
-                enemy_transform.rotation = enemy_transform.rotation.slerp(target_rotation, time.delta_secs() * 2.0);
-                
-                // Move towards player
-                if distance > enemy.attack_range {
-                    let forward = enemy_transform.forward();
-                    enemy_transform.translation += forward * enemy.speed * time.delta_secs();
+            // Update state timer
+            enemy.state_timer -= time.delta_secs();
+            
+            // State transitions
+            match enemy.behavior_state {
+                EnemyBehaviorState::Patrol => {
+                    if distance < enemy.pursuit_range {
+                        enemy.behavior_state = EnemyBehaviorState::Pursuing;
+                        enemy.state_timer = 2.0;
+                    } else {
+                        // Patrol behavior - circle around spawn point
+                        let patrol_angle = time.elapsed_secs() * 0.5;
+                        let patrol_offset = Vec3::new(patrol_angle.cos() * 50.0, 0.0, patrol_angle.sin() * 50.0);
+                        let patrol_target = enemy_transform.translation + patrol_offset;
+                        
+                        let to_patrol = (patrol_target - enemy_transform.translation).normalize();
+                        let patrol_rotation = Transform::IDENTITY.looking_at(to_patrol, Vec3::Y).rotation;
+                        enemy_transform.rotation = enemy_transform.rotation.slerp(patrol_rotation, time.delta_secs());
+                        
+                        let forward = enemy_transform.forward();
+                        enemy_transform.translation += forward * enemy.speed * 0.5 * time.delta_secs();
+                    }
                 }
                 
-                // Keep enemy above ground
-                if enemy_transform.translation.y < 20.0 {
-                    enemy_transform.translation.y = 20.0;
+                EnemyBehaviorState::Pursuing => {
+                    if distance < enemy.attack_range {
+                        enemy.behavior_state = EnemyBehaviorState::Attacking;
+                        enemy.state_timer = 1.5;
+                    } else if distance > enemy.pursuit_range * 1.5 {
+                        enemy.behavior_state = EnemyBehaviorState::Patrol;
+                    } else {
+                        // Advanced pursuit with prediction
+                        let prediction_time = distance / enemy.speed;
+                        let predicted_position = player_transform.translation + player_velocity * prediction_time * 0.5;
+                        let to_predicted = (predicted_position - enemy_transform.translation).normalize();
+                        
+                        let target_rotation = Transform::IDENTITY.looking_at(to_predicted, Vec3::Y).rotation;
+                        enemy_transform.rotation = enemy_transform.rotation.slerp(target_rotation, time.delta_secs() * 3.0);
+                        
+                        let forward = enemy_transform.forward();
+                        enemy_transform.translation += forward * enemy.speed * time.delta_secs();
+                    }
+                }
+                
+                EnemyBehaviorState::Attacking => {
+                    if distance > enemy.attack_range * 1.2 {
+                        enemy.behavior_state = EnemyBehaviorState::Pursuing;
+                    } else if enemy.state_timer <= 0.0 {
+                        // Choose between strafing or evading
+                        if fastrand::f32() > 0.5 {
+                            enemy.behavior_state = EnemyBehaviorState::Strafing;
+                            enemy.evasion_angle = if fastrand::f32() > 0.5 { 1.0 } else { -1.0 };
+                        } else {
+                            enemy.behavior_state = EnemyBehaviorState::Evading;
+                            enemy.evasion_angle = fastrand::f32() * std::f32::consts::TAU;
+                        }
+                        enemy.state_timer = 2.0;
+                    } else {
+                        // Maintain optimal distance while attacking
+                        let distance_error = distance - enemy.preferred_distance;
+                        let forward = enemy_transform.forward();
+                        
+                        if distance_error.abs() > 5.0 {
+                            let speed_multiplier = if distance_error > 0.0 { 1.0 } else { -0.5 };
+                            enemy_transform.translation += forward * enemy.speed * speed_multiplier * time.delta_secs();
+                        }
+                        
+                        // Keep facing player with some lead
+                        let lead_factor = match enemy.enemy_type {
+                            EnemyType::Ace => 0.3,
+                            EnemyType::Fighter => 0.1,
+                            EnemyType::Bomber => 0.0,
+                        };
+                        
+                        let aim_point = player_transform.translation + player_velocity * lead_factor;
+                        let to_aim = (aim_point - enemy_transform.translation).normalize();
+                        let target_rotation = Transform::IDENTITY.looking_at(to_aim, Vec3::Y).rotation;
+                        enemy_transform.rotation = enemy_transform.rotation.slerp(target_rotation, time.delta_secs() * 2.5);
+                    }
+                }
+                
+                EnemyBehaviorState::Strafing => {
+                    if enemy.state_timer <= 0.0 {
+                        enemy.behavior_state = EnemyBehaviorState::Attacking;
+                        enemy.state_timer = 1.0;
+                    } else {
+                        // Circle strafe around player
+                        let radius = enemy.preferred_distance;
+                        let strafe_speed = enemy.speed * 0.8;
+                        let _angular_speed = strafe_speed / radius;
+                        
+                        // Calculate tangent direction
+                        let to_player_normalized = to_player.normalize();
+                        let right = to_player_normalized.cross(Vec3::Y).normalize() * enemy.evasion_angle;
+                        
+                        // Move in circular pattern
+                        enemy_transform.translation += right * strafe_speed * time.delta_secs();
+                        
+                        // Face player while strafing
+                        let target_rotation = Transform::IDENTITY.looking_at(to_player.normalize(), Vec3::Y).rotation;
+                        enemy_transform.rotation = enemy_transform.rotation.slerp(target_rotation, time.delta_secs() * 4.0);
+                        
+                        // Maintain altitude
+                        enemy_transform.translation.y = player_transform.translation.y.clamp(20.0, 200.0);
+                    }
+                }
+                
+                EnemyBehaviorState::Evading => {
+                    if enemy.state_timer <= 0.0 {
+                        enemy.behavior_state = EnemyBehaviorState::Pursuing;
+                    } else {
+                        // Evasive maneuvers
+                        let evasion_pattern = (time.elapsed_secs() * 3.0 + enemy.evasion_angle).sin();
+                        let roll = evasion_pattern * 0.5;
+                        let pitch = (time.elapsed_secs() * 2.0).cos() * 0.3;
+                        
+                        enemy_transform.rotate_local_x(pitch * time.delta_secs());
+                        enemy_transform.rotate_local_z(roll * time.delta_secs());
+                        
+                        let forward = enemy_transform.forward();
+                        enemy_transform.translation += forward * enemy.speed * 1.2 * time.delta_secs();
+                    }
+                }
+                
+                EnemyBehaviorState::Retreating => {
+                    if distance > enemy.pursuit_range * 2.0 {
+                        enemy.behavior_state = EnemyBehaviorState::Patrol;
+                    } else {
+                        // Flee from player
+                        let away_from_player = -to_player.normalize();
+                        let retreat_rotation = Transform::IDENTITY.looking_at(away_from_player, Vec3::Y).rotation;
+                        enemy_transform.rotation = enemy_transform.rotation.slerp(retreat_rotation, time.delta_secs() * 2.0);
+                        
+                        let forward = enemy_transform.forward();
+                        enemy_transform.translation += forward * enemy.speed * 0.8 * time.delta_secs();
+                    }
                 }
             }
+            
+            // Keep enemy within reasonable bounds
+            enemy_transform.translation.y = enemy_transform.translation.y.clamp(10.0, 300.0);
+            
+            // Add slight wobble for more organic movement
+            let wobble = (time.elapsed_secs() * 2.0 + enemy.evasion_angle).sin() * 0.02;
+            enemy_transform.rotate_local_z(wobble);
         }
     }
 }
@@ -202,18 +354,48 @@ pub fn enemy_shooting_system(
             let to_player = player_transform.translation - enemy_transform.translation;
             let distance = to_player.length();
             
-            // Check if enemy can shoot
-            if distance < enemy.attack_range {
+            // Check if enemy can shoot based on state and distance
+            let can_attack = matches!(enemy.behavior_state, EnemyBehaviorState::Attacking | EnemyBehaviorState::Strafing)
+                && distance < enemy.attack_range;
+                
+            if can_attack {
                 // Check if this specific enemy is on cooldown
                 let can_shoot = !shoot_timers.contains_key(&enemy_entity);
                 
                 if can_shoot {
-                    // Add enemy-specific cooldown
-                    shoot_timers.insert(enemy_entity, 1.5); // Enemy fire rate
+                    // Variable fire rate based on enemy type
+                    let fire_rate = match enemy.enemy_type {
+                        EnemyType::Ace => 0.8,
+                        EnemyType::Fighter => 1.2,
+                        EnemyType::Bomber => 2.0,
+                    };
                     
-                    // Spawn bullet
-                    let bullet_spawn = enemy_transform.translation + enemy_transform.forward() * 3.0;
-                    let bullet_velocity = to_player.normalize() * 100.0;
+                    shoot_timers.insert(enemy_entity, fire_rate);
+                    
+                    // Calculate lead for better accuracy
+                    let bullet_speed = 120.0;
+                    let time_to_target = distance / bullet_speed;
+                    let player_velocity = player_transform.forward() * 50.0; // Approximate player speed
+                    let predicted_position = player_transform.translation + player_velocity * time_to_target * 0.5;
+                    
+                    // Accuracy varies by enemy type
+                    let accuracy_spread = match enemy.enemy_type {
+                        EnemyType::Ace => 0.05,
+                        EnemyType::Fighter => 0.15,
+                        EnemyType::Bomber => 0.25,
+                    };
+                    
+                    let spread = Vec3::new(
+                        (fastrand::f32() - 0.5) * accuracy_spread,
+                        (fastrand::f32() - 0.5) * accuracy_spread,
+                        (fastrand::f32() - 0.5) * accuracy_spread,
+                    );
+                    
+                    let to_predicted = (predicted_position - enemy_transform.translation).normalize() + spread;
+                    let bullet_velocity = to_predicted.normalize() * bullet_speed;
+                    
+                    // Spawn bullet with offset for visual appeal
+                    let bullet_spawn = enemy_transform.translation + enemy_transform.forward() * 4.0;
                     
                     commands.spawn((
                         Mesh3d(meshes.add(Sphere::new(0.3))),
@@ -245,35 +427,57 @@ pub fn player_shooting_system(
     mouse: Res<ButtonInput<MouseButton>>,
     time: Res<Time>,
     mut shoot_cooldown: Local<f32>,
+    active_powerups: Res<crate::powerups::ActivePowerUps>,
 ) {
     // Always update cooldown
     if *shoot_cooldown > 0.0 {
         *shoot_cooldown -= time.delta_secs();
     }
     
+    // Adjust fire rate based on powerups
+    let fire_rate = if active_powerups.rapid_fire { 0.1 } else { 0.25 };
+    
     // Use Left Mouse Button or F key for shooting (not Space)
     if (*shoot_cooldown <= 0.0) && (keyboard.pressed(KeyCode::KeyF) || mouse.pressed(MouseButton::Left)) {
         if let Ok(player_transform) = player_query.single() {
-            *shoot_cooldown = 0.25; // Slower, consistent fire rate
+            *shoot_cooldown = fire_rate;
             
-            // Spawn two bullets (one from each wing)
-            for offset in [-2.0, 2.0] {
+            // Determine bullet pattern based on powerups
+            let bullet_offsets = if active_powerups.triple_shot {
+                vec![-3.0, 0.0, 3.0]
+            } else {
+                vec![-2.0, 2.0]
+            };
+            
+            // Enhanced damage with powerups
+            let damage = if active_powerups.homing_missiles { 50.0 } else { 25.0 };
+            
+            // Spawn bullets
+            for offset in bullet_offsets {
                 let bullet_spawn = player_transform.translation 
                     + player_transform.forward() * 5.0
                     + player_transform.right() * offset;
                 
+                let (color, emissive) = if active_powerups.homing_missiles {
+                    (Color::srgb(1.0, 0.0, 0.5), Color::srgb(1.0, 0.0, 0.5))
+                } else if active_powerups.triple_shot {
+                    (Color::srgb(1.0, 0.0, 1.0), Color::srgb(1.0, 0.0, 1.0))
+                } else {
+                    (Color::srgb(0.0, 1.0, 1.0), Color::srgb(0.0, 1.0, 1.0))
+                };
+                
                 commands.spawn((
-                    Mesh3d(meshes.add(Sphere::new(0.2))),
+                    Mesh3d(meshes.add(Sphere::new(0.3))),
                     MeshMaterial3d(materials.add(StandardMaterial {
-                        base_color: Color::srgb(0.0, 1.0, 1.0),
-                        emissive: Color::srgb(0.0, 1.0, 1.0).into(),
+                        base_color: color,
+                        emissive: emissive.into(),
                         ..default()
                     })),
                     Transform::from_translation(bullet_spawn),
                     PlayerBullet {
-                        velocity: player_transform.forward() * 200.0,
-                        damage: 25.0,
-                        lifetime: 2.0,
+                        velocity: player_transform.forward() * 250.0,
+                        damage,
+                        lifetime: 3.0,
                     },
                     GameEntity,
                 ));
@@ -312,12 +516,12 @@ pub fn update_bullets_system(
 pub fn bullet_collision_system(
     mut commands: Commands,
     bullet_query: Query<(Entity, &Transform, &PlayerBullet)>,
-    mut enemy_query: Query<(Entity, &Transform, &mut Health, &Enemy), Without<PlayerBullet>>,
+    mut enemy_query: Query<(Entity, &Transform, &mut Health, &mut Enemy), Without<PlayerBullet>>,
     mut destroyed_events: EventWriter<EnemyDestroyedEvent>,
     mut game_stats: ResMut<GameStats>,
 ) {
     for (bullet_entity, bullet_transform, bullet) in bullet_query.iter() {
-        for (enemy_entity, enemy_transform, mut health, enemy) in enemy_query.iter_mut() {
+        for (enemy_entity, enemy_transform, mut health, mut enemy) in enemy_query.iter_mut() {
             let distance = bullet_transform.translation.distance(enemy_transform.translation);
             
             if distance < 5.0 {  // Increased hit box for easier targeting
@@ -329,31 +533,27 @@ pub fn bullet_collision_system(
                 
                 // Check if enemy is destroyed
                 if health.current <= 0.0 {
-                    // Determine enemy type for event
-                    let enemy_type = if enemy.speed > 70.0 {
-                        EnemyType::Ace
-                    } else if enemy.health > 80.0 {
-                        EnemyType::Bomber
-                    } else {
-                        EnemyType::Fighter
-                    };
-                    
                     // Send destroyed event
                     destroyed_events.write(EnemyDestroyedEvent {
                         position: enemy_transform.translation,
-                        enemy_type,
+                        enemy_type: enemy.enemy_type,
                     });
                     
                     // Award points
-                    let points = match enemy_type {
+                    let points = match enemy.enemy_type {
                         EnemyType::Fighter => 50,
                         EnemyType::Bomber => 100,
                         EnemyType::Ace => 200,
                     };
                     game_stats.score += points;
+                    game_stats.enemies_destroyed += 1;
                     
                     // Remove enemy
                     commands.entity(enemy_entity).despawn();
+                } else if health.current < health.max * 0.3 && !matches!(enemy.behavior_state, EnemyBehaviorState::Retreating) {
+                    // Low health - retreat
+                    enemy.behavior_state = EnemyBehaviorState::Retreating;
+                    enemy.state_timer = 5.0;
                 }
                 
                 break;
@@ -367,14 +567,21 @@ pub fn player_damage_system(
     enemy_bullet_query: Query<(Entity, &Transform, &EnemyBullet)>,
     mut player_query: Query<(&Transform, &mut Health), With<Aircraft>>,
     mut game_state: ResMut<NextState<crate::game_state::GameState>>,
+    active_powerups: Res<crate::powerups::ActivePowerUps>,
 ) {
     if let Ok((player_transform, mut player_health)) = player_query.single_mut() {
         for (bullet_entity, bullet_transform, bullet) in enemy_bullet_query.iter() {
             let distance = bullet_transform.translation.distance(player_transform.translation);
             
             if distance < 5.0 {  // Increased hit box for easier targeting
-                // Damage player
-                player_health.current -= bullet.damage;
+                // Check for shield
+                if !active_powerups.shield {
+                    // Damage player (no shield)
+                    player_health.current -= bullet.damage;
+                } else {
+                    // Shield absorbs damage
+                    player_health.current -= bullet.damage * 0.2; // 80% damage reduction
+                }
                 
                 // Remove bullet
                 commands.entity(bullet_entity).despawn();

@@ -8,11 +8,13 @@ mod game_state;
 mod ui;
 mod targets;
 mod enemies;
+mod powerups;
 
 use game_state::*;
 use ui::*;
 use targets::*;
 use enemies::*;
+use powerups::*;
 
 fn main() {
     App::new()
@@ -29,6 +31,7 @@ fn main() {
         .init_resource::<GameStats>()
         .init_resource::<ChallengeTimer>()
         .init_resource::<UpgradeData>()
+        .init_resource::<ActivePowerUps>()
         .add_event::<TargetHitEvent>()
         .add_event::<EnemyDestroyedEvent>()
         .add_systems(Startup, setup_menu_camera)
@@ -71,7 +74,14 @@ fn main() {
                 update_bullets_system,
                 bullet_collision_system,
                 player_damage_system,
+                player_enemy_collision_system,
                 spawn_explosion_particles,
+                spawn_powerups_system,
+                animate_powerups,
+                collect_powerups_system,
+                update_powerup_effects,
+                cleanup_expired_powerups,
+                update_shield_visual,
             ).run_if(in_state(GameState::Playing)),
         )
         .add_systems(OnEnter(GameState::Paused), release_mouse)
@@ -101,6 +111,10 @@ pub struct Aircraft {
     current_roll: f32,
     target_roll: f32,
     boost_timer: f32,
+    energy: f32,
+    max_energy: f32,
+    velocity: Vec3,
+    angular_velocity: Vec3,
 }
 
 #[derive(Component)]
@@ -172,6 +186,10 @@ fn setup_game(
             current_roll: 0.0,
             target_roll: 0.0,
             boost_timer: 0.0,
+            energy: 100.0,
+            max_energy: 100.0,
+            velocity: Vec3::ZERO,
+            angular_velocity: Vec3::ZERO,
         },
         Health {
             current: 100.0,
@@ -389,12 +407,18 @@ fn cleanup_game(
     ));
 }
 
-fn cleanup_game_stats(mut game_stats: ResMut<GameStats>) {
+fn cleanup_game_stats(
+    mut game_stats: ResMut<GameStats>,
+    mut active_powerups: ResMut<ActivePowerUps>,
+) {
     // Reset per-game stats but keep persistent ones
     game_stats.score = 0;
     game_stats.combo = 0;
     game_stats.targets_hit = 0;
     game_stats.time_played = 0.0;
+    
+    // Reset active powerups
+    active_powerups.reset();
 }
 
 fn flight_controls(
@@ -405,6 +429,7 @@ fn flight_controls(
     game_state: Res<State<GameState>>,
     mut mouse_delta: Local<Vec2>,
     mut motion_events: EventReader<MouseMotion>,
+    active_powerups: Res<ActivePowerUps>,
 ) {
     if *game_state != GameState::Playing {
         return;
@@ -418,119 +443,162 @@ fn flight_controls(
     for (mut transform, mut aircraft) in query.iter_mut() {
         let delta = time.delta_secs();
         
-        // Enhanced mouse controls with smoothing
-        let sensitivity = 0.0008;
+        // Enhanced mouse controls with improved responsiveness
+        let sensitivity = 0.001; // Slightly increased for better control
         if mouse_delta.length() > 0.0 {
-            // Smooth mouse input
-            let smoothed_x = mouse_delta.x.clamp(-100.0, 100.0);
-            let smoothed_y = mouse_delta.y.clamp(-100.0, 100.0);
+            // Smooth mouse input with adaptive sensitivity
+            let mouse_speed = mouse_delta.length();
+            let adaptive_sensitivity = sensitivity * (1.0 + mouse_speed * 0.0001).min(2.0);
             
-            // Yaw (left/right mouse movement)
-            transform.rotate_y(-smoothed_x * sensitivity);
+            let smoothed_x = mouse_delta.x.clamp(-200.0, 200.0);
+            let smoothed_y = mouse_delta.y.clamp(-200.0, 200.0);
             
-            // Pitch (up/down mouse movement) with limits
-            let pitch_amount = -smoothed_y * sensitivity;
+            // Yaw (left/right mouse movement) with momentum
+            let yaw_amount = -smoothed_x * adaptive_sensitivity;
+            transform.rotate_y(yaw_amount);
+            
+            // Pitch (up/down mouse movement) with realistic limits
+            let pitch_amount = -smoothed_y * adaptive_sensitivity;
             let current_pitch = transform.rotation.to_euler(EulerRot::YXZ).1;
-            if (current_pitch + pitch_amount).abs() < 1.2 { // Limit pitch to ~70 degrees
-                transform.rotate_local_x(pitch_amount);
-            }
+            let new_pitch = (current_pitch + pitch_amount).clamp(-1.0, 0.8); // Asymmetric limits
+            transform.rotation = Quat::from_euler(
+                EulerRot::YXZ,
+                transform.rotation.to_euler(EulerRot::YXZ).0,
+                new_pitch,
+                transform.rotation.to_euler(EulerRot::YXZ).2,
+            );
             
-            // Auto-roll based on yaw for more realistic banking
-            aircraft.target_roll = -smoothed_x * 0.01;
+            // Auto-roll based on yaw for realistic banking
+            aircraft.target_roll = -smoothed_x * 0.015 * (1.0 + aircraft.speed / 100.0).min(2.0);
             
-            // Reset mouse delta
-            *mouse_delta = Vec2::ZERO;
+            // Reset mouse delta with decay for smoother control
+            *mouse_delta *= 0.2;
         } else {
-            aircraft.target_roll = 0.0;
+            aircraft.target_roll *= 0.95; // Gradual return to neutral
         }
         
-        // Manual roll controls (A/D) - banking turns
+        // Manual roll controls (A/D) with improved banking
         if keyboard_input.pressed(KeyCode::KeyA) {
-            aircraft.target_roll = 0.5;
+            aircraft.target_roll = 0.7;
+            transform.rotate_y(aircraft.roll_speed * 0.3 * delta); // Banking affects turn rate
         }
         if keyboard_input.pressed(KeyCode::KeyD) {
-            aircraft.target_roll = -0.5;
+            aircraft.target_roll = -0.7;
+            transform.rotate_y(-aircraft.roll_speed * 0.3 * delta);
         }
         
-        // Smooth roll interpolation
-        aircraft.current_roll = aircraft.current_roll.lerp(aircraft.target_roll, delta * 3.0);
+        // Advanced roll physics
+        aircraft.current_roll = aircraft.current_roll.lerp(aircraft.target_roll, delta * 4.0);
         transform.rotate_local_z(aircraft.current_roll * aircraft.roll_speed * delta);
         
-        // Speed controls with boost management
-        let mut current_speed = aircraft.speed;
+        // Speed controls with acceleration/deceleration
+        let base_speed = aircraft.speed * active_powerups.speed_multiplier;
+        let mut target_speed = base_speed;
         
-        // W for speed up, S for slow down
+        // Throttle controls
         if keyboard_input.pressed(KeyCode::KeyW) {
-            current_speed *= 1.5;
-        }
-        if keyboard_input.pressed(KeyCode::KeyS) {
-            current_speed *= 0.7;
+            target_speed = base_speed * 1.8;
+            aircraft.boost_timer = 0.05; // Light afterburner effect
+        } else if keyboard_input.pressed(KeyCode::KeyS) {
+            target_speed = base_speed * 0.5;
         }
         
-        // Space for boost with timer
-        if keyboard_input.pressed(KeyCode::Space) {
-            current_speed *= 2.5;
-            aircraft.boost_timer = 0.1;
+        // Boost with energy management
+        if keyboard_input.pressed(KeyCode::Space) && aircraft.boost_timer <= 0.0 {
+            target_speed = base_speed * 3.0;
+            aircraft.boost_timer = 0.2;
         }
+        
+        // Smooth speed transitions
+        let current_speed = if aircraft.boost_timer > 0.0 {
+            target_speed
+        } else {
+            aircraft.speed + (target_speed - aircraft.speed) * delta * 3.0
+        };
         
         // Update boost timer
         if aircraft.boost_timer > 0.0 {
             aircraft.boost_timer -= delta;
         }
         
-        // Move forward
+        // Advanced movement with lift simulation
         let forward = transform.forward();
-        transform.translation += forward * current_speed * delta;
+        let velocity = forward * current_speed;
         
-        // Keep aircraft above ground with smooth correction
-        let min_height = 10.0;
-        if transform.translation.y < min_height {
-            transform.translation.y = transform.translation.y.lerp(min_height, delta * 5.0);
-            // Add upward pitch correction when too low
-            if transform.translation.y < min_height + 5.0 {
-                transform.rotate_local_x(delta * 0.5);
+        // Add lift based on speed and pitch
+        let pitch_angle = transform.rotation.to_euler(EulerRot::YXZ).1;
+        let lift_factor = (current_speed / base_speed).min(2.0) * pitch_angle.sin();
+        let lift = Vec3::Y * lift_factor * 10.0;
+        
+        transform.translation += (velocity + lift) * delta;
+        
+        // Altitude management with ground effect
+        let ground_height = 5.0;
+        let effect_height = 20.0;
+        if transform.translation.y < effect_height {
+            let ground_effect = 1.0 - (transform.translation.y - ground_height) / (effect_height - ground_height);
+            let upward_force = ground_effect.max(0.0) * 50.0;
+            transform.translation.y += upward_force * delta;
+            
+            // Auto-level when very low
+            if transform.translation.y < ground_height + 5.0 {
+                let level_rotation = transform.rotation.slerp(
+                    Quat::from_rotation_y(transform.rotation.to_euler(EulerRot::YXZ).0),
+                    delta * 2.0
+                );
+                transform.rotation = level_rotation;
             }
         }
         
-        // Update camera to follow aircraft with enhanced movement
+        // Prevent going below ground
+        transform.translation.y = transform.translation.y.max(ground_height);
+        
+        // Update camera with cinematic movement
         if let Ok((mut camera_transform, mut camera)) = camera_query.single_mut() {
-            // Dynamic camera offset based on speed and boost
+            // Dynamic camera positioning
+            let speed_ratio = current_speed / base_speed;
             let base_offset = Vec3::new(0.0, 8.0, 20.0);
-            let speed_factor = if keyboard_input.pressed(KeyCode::Space) { 1.5 } else if keyboard_input.pressed(KeyCode::KeyW) { 1.2 } else { 1.0 };
-            let camera_offset = base_offset * Vec3::new(1.0, 1.0, speed_factor);
             
+            // Pull camera back when boosting
+            let distance_multiplier = 1.0 + (speed_ratio - 1.0).max(0.0) * 0.5;
+            let height_multiplier = 1.0 - (aircraft.current_roll.abs() * 0.2); // Lower when banking
+            
+            let camera_offset = base_offset * Vec3::new(1.0, height_multiplier, distance_multiplier);
             let rotated_offset = transform.rotation * camera_offset;
             let target_pos = transform.translation + rotated_offset;
             
-            // Smooth camera follow with different speeds for different axes
-            let follow_speed = Vec3::new(8.0, 6.0, 8.0);
+            // Smooth camera follow with lag
+            let follow_speed = Vec3::new(6.0, 4.0, 6.0) * (2.0 - speed_ratio * 0.5).max(0.5);
             camera_transform.translation.x = camera_transform.translation.x.lerp(target_pos.x, delta * follow_speed.x);
             camera_transform.translation.y = camera_transform.translation.y.lerp(target_pos.y, delta * follow_speed.y);
             camera_transform.translation.z = camera_transform.translation.z.lerp(target_pos.z, delta * follow_speed.z);
             
-            // Camera shake when boosting
+            // Camera shake effects
             if aircraft.boost_timer > 0.0 {
-                camera.shake_amount = 2.0;
-                camera.shake_timer = 0.1;
+                camera.shake_amount = 3.0 * aircraft.boost_timer / 0.2;
+                camera.shake_timer = aircraft.boost_timer;
             }
             
-            // Apply camera shake
+            // Apply camera shake with turbulence
             if camera.shake_timer > 0.0 {
                 camera.shake_timer -= delta;
+                let turbulence = time.elapsed_secs() * 15.0;
                 let shake_offset = Vec3::new(
-                    (fastrand::f32() - 0.5) * camera.shake_amount,
-                    (fastrand::f32() - 0.5) * camera.shake_amount,
+                    turbulence.sin() * camera.shake_amount * 0.5,
+                    turbulence.cos() * camera.shake_amount * 0.3,
                     0.0
                 );
                 camera_transform.translation += shake_offset;
             }
             
-            // Look slightly ahead of the aircraft with banking tilt
-            let look_ahead = transform.translation + forward * 15.0;
-            camera_transform.look_at(look_ahead, Vec3::Y);
+            // Look ahead with predictive targeting
+            let velocity_prediction = velocity * 0.2;
+            let look_target = transform.translation + forward * 20.0 + velocity_prediction;
+            camera_transform.look_at(look_target, Vec3::Y);
             
-            // Add camera roll to match aircraft banking
-            camera_transform.rotate_z(aircraft.current_roll * 0.3);
+            // Dynamic camera roll
+            let camera_roll = aircraft.current_roll * 0.4 * (1.0 - speed_ratio * 0.2).max(0.3);
+            camera_transform.rotate_z(camera_roll);
         }
     }
 }
@@ -539,8 +607,16 @@ fn flight_controls(
 fn update_challenge_timer(
     mut timer: ResMut<ChallengeTimer>,
     game_mode: Res<CurrentGameMode>,
+    mut game_stats: ResMut<GameStats>,
     time: Res<Time>,
 ) {
+    // Update time played
+    game_stats.time_played += time.delta_secs();
+    
+    // Increase difficulty over time
+    let difficulty_increase_rate = 0.1; // 10% per minute
+    game_stats.difficulty_level = 1.0 + (game_stats.time_played / 60.0) * difficulty_increase_rate;
+    
     match game_mode.mode {
         GameMode::TimeAttack | GameMode::Survival | GameMode::RaceTheClock => {
             timer.time_remaining -= time.delta_secs();
@@ -735,5 +811,61 @@ fn cleanup_game_entities(
                 .looking_at(Vec3::new(0.0, 50.0, 0.0), Vec3::Y),
             MenuCamera,
         ));
+    }
+}
+
+fn player_enemy_collision_system(
+    mut commands: Commands,
+    mut player_query: Query<(&Transform, &mut enemies::Health), With<Aircraft>>,
+    enemy_query: Query<(Entity, &Transform, &enemies::Enemy), Without<Aircraft>>,
+    mut destroyed_events: EventWriter<enemies::EnemyDestroyedEvent>,
+    mut game_stats: ResMut<GameStats>,
+    mut camera_query: Query<&mut FlightCamera>,
+) {
+    if let Ok((player_transform, mut player_health)) = player_query.single_mut() {
+        for (enemy_entity, enemy_transform, enemy) in enemy_query.iter() {
+            let distance = player_transform.translation.distance(enemy_transform.translation);
+            
+            // Collision radius based on enemy type
+            let collision_radius = match enemy.enemy_type {
+                enemies::EnemyType::Bomber => 8.0,
+                enemies::EnemyType::Fighter => 6.0,
+                enemies::EnemyType::Ace => 5.0,
+            };
+            
+            if distance < collision_radius {
+                // Collision damage
+                let collision_damage = match enemy.enemy_type {
+                    enemies::EnemyType::Bomber => 40.0,
+                    enemies::EnemyType::Fighter => 30.0,
+                    enemies::EnemyType::Ace => 25.0,
+                };
+                
+                player_health.current = (player_health.current - collision_damage).max(0.0);
+                
+                // Award partial points for ramming
+                let ram_points = match enemy.enemy_type {
+                    enemies::EnemyType::Fighter => 25,
+                    enemies::EnemyType::Bomber => 50,
+                    enemies::EnemyType::Ace => 100,
+                };
+                game_stats.score += ram_points;
+                
+                // Send destroyed event
+                destroyed_events.write(enemies::EnemyDestroyedEvent {
+                    position: enemy_transform.translation,
+                    enemy_type: enemy.enemy_type,
+                });
+                
+                // Remove enemy
+                commands.entity(enemy_entity).despawn();
+                
+                // Camera shake on collision
+                if let Ok(mut camera) = camera_query.single_mut() {
+                    camera.shake_amount = 5.0;
+                    camera.shake_timer = 0.3;
+                }
+            }
+        }
     }
 }

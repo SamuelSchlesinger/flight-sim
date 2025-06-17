@@ -42,6 +42,8 @@ pub struct GameStats {
     pub targets_hit: u32,
     pub time_played: f32,
     pub coins: u32,
+    pub enemies_destroyed: u32,
+    pub difficulty_level: f32,
 }
 
 impl Default for GameStats {
@@ -54,6 +56,8 @@ impl Default for GameStats {
             targets_hit: 0,
             time_played: 0.0,
             coins: 0,
+            enemies_destroyed: 0,
+            difficulty_level: 1.0,
         }
     }
 }

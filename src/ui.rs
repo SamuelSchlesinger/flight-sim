@@ -107,6 +107,8 @@ pub fn game_hud(
     game_mode: Res<CurrentGameMode>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
     player_query: Query<&crate::enemies::Health, With<crate::Aircraft>>,
+    _active_powerups: Res<crate::powerups::ActivePowerUps>,
+    powerup_effects: Query<&crate::powerups::PowerUpEffect>,
 ) {
     let ctx = contexts.ctx_mut();
     
@@ -224,6 +226,34 @@ pub fn game_hud(
                 ui.label(egui::RichText::new("Space - Boost").size(14.0).color(egui::Color32::GRAY));
                 ui.label(egui::RichText::new("Left Click/F - Shoot").size(14.0).color(egui::Color32::GRAY));
                 ui.label(egui::RichText::new("ESC - Pause").size(14.0).color(egui::Color32::GRAY));
+            });
+        });
+    
+    // Active powerups display
+    egui::Area::new(egui::Id::new("powerups_display"))
+        .anchor(egui::Align2::RIGHT_TOP, [-10.0, 50.0])
+        .show(ctx, |ui| {
+            ui.vertical(|ui| {
+                if !powerup_effects.is_empty() {
+                    ui.label(egui::RichText::new("ACTIVE POWERUPS").size(16.0).color(egui::Color32::WHITE));
+                    ui.add_space(5.0);
+                    
+                    for effect in powerup_effects.iter() {
+                        let (icon, name, color) = match effect.effect_type {
+                            crate::powerups::PowerUpType::RapidFire => ("🔥", "Rapid Fire", egui::Color32::from_rgb(255, 128, 0)),
+                            crate::powerups::PowerUpType::Shield => ("🛡️", "Shield", egui::Color32::from_rgb(0, 128, 255)),
+                            crate::powerups::PowerUpType::SpeedBoost => ("⚡", "Speed Boost", egui::Color32::from_rgb(255, 255, 0)),
+                            crate::powerups::PowerUpType::TripleShot => ("🎯", "Triple Shot", egui::Color32::from_rgb(255, 0, 255)),
+                            crate::powerups::PowerUpType::HomingMissiles => ("🚀", "Homing", egui::Color32::from_rgb(255, 0, 0)),
+                            _ => continue,
+                        };
+                        
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(format!("{} {}", icon, name)).size(14.0).color(color));
+                            ui.label(egui::RichText::new(format!("{:.1}s", effect.remaining)).size(12.0).color(egui::Color32::GRAY));
+                        });
+                    }
+                }
             });
         });
     
