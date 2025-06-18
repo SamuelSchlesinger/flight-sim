@@ -9,6 +9,7 @@ mod ui;
 mod targets;
 mod enemies;
 mod powerups;
+mod tests;
 
 use game_state::*;
 use ui::*;
@@ -105,21 +106,14 @@ fn main() {
 #[derive(Component)]
 pub struct Aircraft {
     speed: f32,
-    pitch_speed: f32,
     roll_speed: f32,
-    yaw_speed: f32,
     current_roll: f32,
     target_roll: f32,
     boost_timer: f32,
-    energy: f32,
-    max_energy: f32,
-    velocity: Vec3,
-    angular_velocity: Vec3,
 }
 
 #[derive(Component)]
 struct FlightCamera {
-    sensitivity: f32,
     shake_amount: f32,
     shake_timer: f32,
 }
@@ -180,16 +174,10 @@ fn setup_game(
         Visibility::default(),
         Aircraft {
             speed: 50.0 * speed_multiplier,
-            pitch_speed: 1.0 * maneuverability_multiplier,
             roll_speed: 1.5 * maneuverability_multiplier,
-            yaw_speed: 1.0 * maneuverability_multiplier,
             current_roll: 0.0,
             target_roll: 0.0,
             boost_timer: 0.0,
-            energy: 100.0,
-            max_energy: 100.0,
-            velocity: Vec3::ZERO,
-            angular_velocity: Vec3::ZERO,
         },
         Health {
             current: 100.0,
@@ -291,7 +279,6 @@ fn setup_game(
         Transform::from_xyz(0.0, 55.0, 15.0)
             .looking_at(Vec3::new(0.0, 50.0, 0.0), Vec3::Y),
         FlightCamera {
-            sensitivity: 0.002,
             shake_amount: 0.0,
             shake_timer: 0.0,
         },
@@ -709,7 +696,7 @@ fn spawn_engine_trails(
                 Mesh3d(meshes.add(Sphere::new(trail_size))),
                 MeshMaterial3d(materials.add(StandardMaterial {
                     base_color,
-                    emissive: (base_color.to_linear() * emissive_strength).into(),
+                    emissive: base_color.to_linear() * emissive_strength,
                     alpha_mode: AlphaMode::Blend,
                     ..default()
                 })),

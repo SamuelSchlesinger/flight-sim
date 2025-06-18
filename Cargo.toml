@@ -1,7 +1,23 @@
 [package]
-name = "flight-sim"
+name = "sky-hunter"
 version = "0.1.0"
 edition = "2021"
+authors = ["Sky Hunter Contributors"]
+description = "A fast-paced arcade flight game with aerial combat and upgrade progression"
+readme = "README.md"
+repository = "https://github.com/samuelschlesinger/sky-hunter"
+license = "MIT"
+keywords = ["game", "bevy", "flight", "arcade", "combat"]
+categories = ["games"]
+exclude = [
+    "target/",
+    ".git/",
+    ".gitignore",
+]
+
+[[bin]]
+name = "sky-hunter"
+path = "src/main.rs"
 
 [dependencies]
 bevy = "0.16.1"

@@ -185,7 +185,7 @@ pub fn game_hud(
                 egui::Color32::WHITE
             };
             
-            ui.label(egui::RichText::new(format!("Speed: {}", speed_text)).size(18.0).color(speed_color));
+            ui.label(egui::RichText::new(format!("Speed: {speed_text}")).size(18.0).color(speed_color));
         });
     
     // Health bar
@@ -249,7 +249,7 @@ pub fn game_hud(
                         };
                         
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(format!("{} {}", icon, name)).size(14.0).color(color));
+                            ui.label(egui::RichText::new(format!("{icon} {name}")).size(14.0).color(color));
                             ui.label(egui::RichText::new(format!("{:.1}s", effect.remaining)).size(12.0).color(egui::Color32::GRAY));
                         });
                     }
@@ -375,7 +375,7 @@ pub fn game_over_screen(
             ui.add_space(20.0);
             
             let coins_earned = game_stats.score / 100;
-            ui.label(egui::RichText::new(format!("💰 Coins Earned: {}", coins_earned)).size(20.0).color(egui::Color32::YELLOW));
+            ui.label(egui::RichText::new(format!("💰 Coins Earned: {coins_earned}")).size(20.0).color(egui::Color32::YELLOW));
             
             ui.add_space(40.0);
             
@@ -442,7 +442,7 @@ pub fn upgrade_shop_ui(
                 let cost = get_upgrade_cost(upgrades.speed_level);
                 let can_afford = game_stats.coins >= cost;
                 
-                if ui.add_enabled(can_afford, egui::Button::new(format!("Upgrade (💰 {})", cost))).clicked() {
+                if ui.add_enabled(can_afford, egui::Button::new(format!("Upgrade (💰 {cost})"))).clicked() {
                     game_stats.coins -= cost;
                     upgrades.speed_level += 1;
                 }
@@ -461,7 +461,7 @@ pub fn upgrade_shop_ui(
                 let cost = get_upgrade_cost(upgrades.maneuverability_level);
                 let can_afford = game_stats.coins >= cost;
                 
-                if ui.add_enabled(can_afford, egui::Button::new(format!("Upgrade (💰 {})", cost))).clicked() {
+                if ui.add_enabled(can_afford, egui::Button::new(format!("Upgrade (💰 {cost})"))).clicked() {
                     game_stats.coins -= cost;
                     upgrades.maneuverability_level += 1;
                 }
@@ -480,7 +480,7 @@ pub fn upgrade_shop_ui(
                 let cost = get_upgrade_cost(upgrades.magnet_level + 1);
                 let can_afford = game_stats.coins >= cost;
                 
-                if ui.add_enabled(can_afford, egui::Button::new(format!("Upgrade (💰 {})", cost))).clicked() {
+                if ui.add_enabled(can_afford, egui::Button::new(format!("Upgrade (💰 {cost})"))).clicked() {
                     game_stats.coins -= cost;
                     upgrades.magnet_level += 1;
                 }
@@ -499,7 +499,7 @@ pub fn upgrade_shop_ui(
                 let cost = get_upgrade_cost(upgrades.multiplier_level);
                 let can_afford = game_stats.coins >= cost;
                 
-                if ui.add_enabled(can_afford, egui::Button::new(format!("Upgrade (💰 {})", cost))).clicked() {
+                if ui.add_enabled(can_afford, egui::Button::new(format!("Upgrade (💰 {cost})"))).clicked() {
                     game_stats.coins -= cost;
                     upgrades.multiplier_level += 1;
                 }

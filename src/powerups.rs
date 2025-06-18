@@ -22,7 +22,6 @@ pub enum PowerUpType {
 #[derive(Component)]
 pub struct PowerUpEffect {
     pub effect_type: PowerUpType,
-    pub duration: f32,
     pub remaining: f32,
 }
 
@@ -125,7 +124,7 @@ pub fn spawn_powerups_system(
                 Mesh3d(meshes.add(Sphere::new(1.5))),
                 MeshMaterial3d(materials.add(StandardMaterial {
                     base_color: color.lighter(0.3),
-                    emissive: (emissive_color.to_linear() * 2.0).into(),
+                    emissive: emissive_color.to_linear() * 2.0,
                     alpha_mode: AlphaMode::Blend,
                     ..default()
                 })),
@@ -199,7 +198,6 @@ pub fn collect_powerups_system(
                         commands.entity(player_entity).with_child((
                             PowerUpEffect {
                                 effect_type: powerup.power_type,
-                                duration,
                                 remaining: duration,
                             },
                         ));

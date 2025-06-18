@@ -5,7 +5,6 @@ use crate::{Aircraft, GameEntity, game_state::GameStats};
 #[derive(Component)]
 pub struct Enemy {
     pub speed: f32,
-    pub health: f32,
     pub damage: f32,
     pub attack_range: f32,
     pub pursuit_range: f32,
@@ -116,7 +115,6 @@ pub fn spawn_enemies_system(
                 Visibility::default(),
                 Enemy {
                     speed,
-                    health,
                     damage,
                     attack_range: 50.0,
                     pursuit_range: 200.0,

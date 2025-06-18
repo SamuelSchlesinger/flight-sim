@@ -39,7 +39,6 @@ pub struct ParticleEffect {
 #[derive(Event)]
 pub struct TargetHitEvent {
     pub position: Vec3,
-    pub points: u32,
     pub target_type: TargetType,
 }
 
@@ -233,7 +232,6 @@ pub fn collision_detection_system(
                 // Send hit event
                 hit_events.write(TargetHitEvent {
                     position: target_transform.translation,
-                    points: total_points,
                     target_type: target.target_type,
                 });
                 
