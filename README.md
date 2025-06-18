@@ -45,7 +45,7 @@ A fast-paced arcade flight game built with the Bevy game engine, featuring aeria
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/sky-hunter.git
+git clone https://github.com/SamuelSchlesinger/sky-hunter.git
 cd sky-hunter
 ```
 
@@ -130,4 +130,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-If you encounter any issues or have suggestions, please file an issue on the [GitHub issue tracker](https://github.com/yourusername/sky-hunter/issues).
+If you encounter any issues or have suggestions, please file an issue on the [GitHub issue tracker](https://github.com/SamuelSchlesinger/sky-hunter/issues).

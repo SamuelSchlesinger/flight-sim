@@ -15,7 +15,7 @@ Thank you for your interest in contributing to Sky Hunter! We welcome contributi
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/sky-hunter.git
+git clone https://github.com/SamuelSchlesinger/sky-hunter.git
 cd sky-hunter
 
 # Build the project
