@@ -9,6 +9,7 @@ mod ui;
 mod targets;
 mod enemies;
 mod powerups;
+mod models;
 mod tests;
 
 use game_state::*;
@@ -151,18 +152,48 @@ fn setup_game(
         commands.entity(camera).despawn();
     }
     
-    // Ground plane with improved material
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(3000.0, 3000.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.2, 0.4, 0.2),
-            metallic: 0.0,
-            perceptual_roughness: 0.9,
-            ..default()
-        })),
-        Transform::from_xyz(0.0, 0.0, 0.0),
-        GameEntity,
-    ));
+    // Terrain with height variation
+    let terrain_size = 400.0;
+    let terrain_resolution = 32;
+    let height_scale = 15.0;
+    
+    // Create terrain chunks for better performance
+    for chunk_x in -2..=2 {
+        for chunk_z in -2..=2 {
+            let offset_x = chunk_x as f32 * terrain_size;
+            let offset_z = chunk_z as f32 * terrain_size;
+            
+            let terrain_mesh = models::create_terrain_chunk(
+                terrain_size,
+                terrain_resolution,
+                |x, z| {
+                    // Simple height function using sine waves
+                    let nx = (x + offset_x) * 0.005;
+                    let nz = (z + offset_z) * 0.005;
+                    height_scale * (
+                        nx.sin() * 0.5 +
+                        (nx * 2.0).sin() * 0.25 +
+                        nz.cos() * 0.5 +
+                        (nz * 3.0).cos() * 0.25
+                    ) * 0.25
+                },
+            );
+            
+            commands.spawn((
+                Mesh3d(meshes.add(terrain_mesh)),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    base_color: Color::srgb(0.2, 0.4, 0.2),
+                    metallic: 0.0,
+                    perceptual_roughness: 0.9,
+                    double_sided: true,
+                    cull_mode: None,
+                    ..default()
+                })),
+                Transform::from_xyz(offset_x, 0.0, offset_z),
+                GameEntity,
+            ));
+        }
+    }
     
     // Calculate upgrade bonuses
     let speed_multiplier = get_speed_bonus(upgrades.speed_level);
@@ -198,7 +229,7 @@ fn setup_game(
         Transform::from_xyz(0.0, 0.0, 0.0),
     )).id();
     
-    // Nose cone (snout)
+    // Nose cone
     let nose = commands.spawn((
         Mesh3d(meshes.add(Cylinder::new(0.5, 1.5))),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -308,72 +339,61 @@ fn setup_game(
         affects_lightmapped_meshes: false,
     });
     
-    // Add some environmental decoration - trees
-    for _ in 0..50 {
+    // Add some environmental decoration - trees with detailed models
+    for i in 0..50 {
         let x = (fastrand::f32() - 0.5) * 1000.0;
         let z = (fastrand::f32() - 0.5) * 1000.0;
-        let height = 10.0 + fastrand::f32() * 15.0;
         
-        // Tree trunk
+        // Create detailed tree with branches
         commands.spawn((
-            Mesh3d(meshes.add(Cylinder::new(2.0, height))),
+            Mesh3d(meshes.add(models::create_tree_mesh(i as u32))),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: Color::srgb(0.4, 0.3, 0.2),
                 perceptual_roughness: 0.9,
                 ..default()
             })),
-            Transform::from_xyz(x, height / 2.0, z),
+            Transform::from_xyz(x, 0.0, z),
             GameEntity,
         ));
         
-        // Tree leaves
+        // Tree leaves (canopy)
+        let canopy_size = 8.0 + fastrand::f32() * 4.0;
+        let height_variation = ((i % 10) as f32 / 10.0) * 10.0;
+        let trunk_height = 15.0 + height_variation;
+        
         commands.spawn((
-            Mesh3d(meshes.add(Sphere::new(8.0 + fastrand::f32() * 4.0))),
+            Mesh3d(meshes.add(Sphere::new(canopy_size))),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: Color::srgb(0.2, 0.6, 0.2),
                 perceptual_roughness: 0.8,
                 ..default()
             })),
-            Transform::from_xyz(x, height + 5.0, z),
+            Transform::from_xyz(x, trunk_height + canopy_size * 0.5, z),
             GameEntity,
         ));
     }
     
-    // Add fluffy clouds
-    for _ in 0..30 {
+    // Add volumetric clouds
+    for i in 0..30 {
         let x = (fastrand::f32() - 0.5) * 2000.0;
         let z = (fastrand::f32() - 0.5) * 2000.0;
         let y = 150.0 + fastrand::f32() * 150.0;
         
-        // Create cloud cluster for fluffiness
-        let cloud_center = Vec3::new(x, y, z);
-        let cloud_parts = 3 + fastrand::usize(..4);
-        
-        for _ in 0..cloud_parts {
-            let offset = Vec3::new(
-                (fastrand::f32() - 0.5) * 40.0,
-                (fastrand::f32() - 0.5) * 20.0,
-                (fastrand::f32() - 0.5) * 40.0,
-            );
-            
-            let size = 20.0 + fastrand::f32() * 30.0;
-            let opacity = 0.4 + fastrand::f32() * 0.2;
-            
-            commands.spawn((
-                Mesh3d(meshes.add(Sphere::new(size))),
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: Color::srgba(1.0, 1.0, 1.0, opacity),
-                    alpha_mode: AlphaMode::Blend,
-                    perceptual_roughness: 1.0,
-                    double_sided: true,
-                    cull_mode: None,
-                    ..default()
-                })),
-                Transform::from_translation(cloud_center + offset)
-                    .with_scale(Vec3::new(1.5, 0.7, 1.5)), // Flatten clouds
-                GameEntity,
-            ));
-        }
+        // Use volumetric cloud mesh
+        commands.spawn((
+            Mesh3d(meshes.add(models::create_volumetric_cloud_mesh(i as u32))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgba(1.0, 1.0, 1.0, 0.6),
+                alpha_mode: AlphaMode::Blend,
+                perceptual_roughness: 1.0,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            })),
+            Transform::from_xyz(x, y, z)
+                .with_scale(Vec3::splat(2.0)),
+            GameEntity,
+        ));
     }
 }
 

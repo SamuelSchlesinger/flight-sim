@@ -117,9 +117,9 @@ pub fn spawn_targets_system(
                 },
             )).id();
             
-            // Balloon body (slightly elongated sphere)
+            // Balloon body with detailed mesh
             let balloon_body = commands.spawn((
-                Mesh3d(meshes.add(Sphere::new(1.5 * scale))),
+                Mesh3d(meshes.add(crate::models::create_detailed_balloon_mesh(&target_type))),
                 MeshMaterial3d(materials.add(StandardMaterial {
                     base_color: color,
                     emissive: color.to_linear() * 0.3,
@@ -127,7 +127,7 @@ pub fn spawn_targets_system(
                     perceptual_roughness: 0.3,
                     ..default()
                 })),
-                Transform::from_scale(Vec3::new(1.0, 1.2, 1.0)),
+                Transform::from_scale(Vec3::splat(scale)),
             )).id();
             
             // Balloon highlight (small sphere for shine effect)
