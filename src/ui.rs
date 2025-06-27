@@ -109,6 +109,9 @@ pub fn game_hud(
     player_query: Query<&crate::enemies::Health, With<crate::Aircraft>>,
     _active_powerups: Res<crate::powerups::ActivePowerUps>,
     powerup_effects: Query<&crate::powerups::PowerUpEffect>,
+    mut radio_chatter_events: EventReader<crate::enemies::RadioChatterEvent>,
+    mut chatter_display: Local<Vec<(String, f32, crate::enemies::EnemyType)>>,
+    time: Res<Time>,
 ) {
     let ctx = contexts.ctx_mut();
     
@@ -256,6 +259,44 @@ pub fn game_hud(
                 }
             });
         });
+    
+    // Process new radio chatter events
+    for event in radio_chatter_events.read() {
+        chatter_display.push((event.message.clone(), 5.0, event.sender_type));
+        
+        // Keep only the last 5 messages
+        if chatter_display.len() > 5 {
+            chatter_display.remove(0);
+        }
+    }
+    
+    // Update and display radio chatter
+    chatter_display.retain_mut(|(_, timer, _)| {
+        *timer -= time.delta_secs();
+        *timer > 0.0
+    });
+    
+    if !chatter_display.is_empty() {
+        egui::Area::new(egui::Id::new("radio_chatter"))
+            .anchor(egui::Align2::LEFT_TOP, [10.0, 80.0])
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("RADIO CHATTER").size(14.0).color(egui::Color32::LIGHT_GRAY));
+                    ui.add_space(5.0);
+                    
+                    for (message, timer, enemy_type) in chatter_display.iter() {
+                        let alpha = (*timer / 5.0 * 255.0) as u8;
+                        let color = match enemy_type {
+                            crate::enemies::EnemyType::Fighter => egui::Color32::from_rgba_unmultiplied(255, 100, 100, alpha),
+                            crate::enemies::EnemyType::Bomber => egui::Color32::from_rgba_unmultiplied(150, 150, 150, alpha),
+                            crate::enemies::EnemyType::Ace => egui::Color32::from_rgba_unmultiplied(100, 100, 255, alpha),
+                        };
+                        
+                        ui.label(egui::RichText::new(format!("📻 {}", message)).size(12.0).color(color));
+                    }
+                });
+            });
+    }
     
     // Pause handling moved to handle_escape_key in main.rs
 }

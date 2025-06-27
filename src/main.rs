@@ -36,6 +36,7 @@ fn main() {
         .init_resource::<ActivePowerUps>()
         .add_event::<TargetHitEvent>()
         .add_event::<EnemyDestroyedEvent>()
+        .add_event::<RadioChatterEvent>()
         .add_systems(Startup, setup_menu_camera)
         .add_systems(OnEnter(GameState::Playing), (setup_game, capture_mouse))
         .add_systems(OnExit(GameState::Playing), release_mouse)
